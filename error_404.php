@@ -1,233 +1,212 @@
 <?php
 require_once 'config.php';
 
-// Iestatīt 404 statusu
+// Iestatīt HTTP statusu
 http_response_code(404);
 
 $pageTitle = 'Lapa nav atrasta';
 $pageHeader = 'Lapa nav atrasta';
 
-// Ja lietotājs nav pieslēdzies, parādīt vienkāršāku versiju
-$isLoggedIn = isLoggedIn();
-$currentUser = $isLoggedIn ? getCurrentUser() : null;
+// Ja lietotājs nav pieslēdzies, parādīt vienkāršu 404 lapu
+if (!isLoggedIn()) {
+    ?>
+    <!DOCTYPE html>
+    <html lang="lv">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title><?php echo getPageTitle($pageTitle); ?></title>
+        <link rel="stylesheet" href="assets/css/style.css">
+    </head>
+    <body>
+        <div class="error-page">
+            <div class="error-content">
+                <h1>404</h1>
+                <h2>Lapa nav atrasta</h2>
+                <p>Diemžēl meklētā lapa nav atrasta.</p>
+                <a href="login.php" class="btn btn-primary">Pieslēgties</a>
+            </div>
+        </div>
+        
+        <style>
+        .error-page {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            text-align: center;
+            color: white;
+        }
+        .error-content h1 {
+            font-size: 8rem;
+            margin-bottom: 1rem;
+        }
+        .error-content h2 {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+        .error-content p {
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+        }
+        </style>
+    </body>
+    </html>
+    <?php
+    exit();
+}
 
-// Mēģināt noteikt, ko lietotājs meklēja
+$currentUser = getCurrentUser();
 $requestedUrl = $_SERVER['REQUEST_URI'] ?? '';
-$suggestions = [];
 
-// Dot ieteikumus balstoties uz URL
-if (strpos($requestedUrl, 'task') !== false) {
-    $suggestions[] = ['url' => 'tasks.php', 'title' => 'Uzdevumi', 'description' => 'Visi sistēmas uzdevumi'];
-    $suggestions[] = ['url' => 'my_tasks.php', 'title' => 'Mani uzdevumi', 'description' => 'Jūsu piešķirtie uzdevumi'];
-    $suggestions[] = ['url' => 'create_task.php', 'title' => 'Izveidot uzdevumu', 'description' => 'Jauna uzdevuma izveidošana'];
-} elseif (strpos($requestedUrl, 'problem') !== false) {
-    $suggestions[] = ['url' => 'problems.php', 'title' => 'Problēmas', 'description' => 'Visas sistēmas problēmas'];
-    $suggestions[] = ['url' => 'report_problem.php', 'title' => 'Ziņot problēmu', 'description' => 'Jauna problēma'];
-    $suggestions[] = ['url' => 'my_problems.php', 'title' => 'Manas problēmas', 'description' => 'Jūsu ziņotās problēmas'];
-} elseif (strpos($requestedUrl, 'user') !== false) {
-    $suggestions[] = ['url' => 'users.php', 'title' => 'Lietotāji', 'description' => 'Lietotāju pārvaldība'];
-    $suggestions[] = ['url' => 'profile.php', 'title' => 'Profils', 'description' => 'Jūsu profila iestatījumi'];
-} elseif (strpos($requestedUrl, 'report') !== false) {
-    $suggestions[] = ['url' => 'reports.php', 'title' => 'Atskaites', 'description' => 'Sistēmas atskaites un statistika'];
-}
-
-// Ja nav konkrētu ieteikumu, dot vispārīgos
-if (empty($suggestions)) {
-    $suggestions = [
-        ['url' => 'index.php', 'title' => 'Sākums', 'description' => 'Sistēmas sākuma lapa'],
-        ['url' => 'tasks.php', 'title' => 'Uzdevumi', 'description' => 'Visi sistēmas uzdevumi'],
-        ['url' => 'problems.php', 'title' => 'Problēmas', 'description' => 'Visas sistēmas problēmas'],
-        ['url' => 'notifications.php', 'title' => 'Paziņojumi', 'description' => 'Jūsu paziņojumi']
-    ];
-}
-
-// Ja nav pieslēdzies, parādīt tikai pieslēgšanās
-if (!$isLoggedIn) {
-    include 'includes/header.php';
-} else {
-    include 'includes/header.php';
-}
+include 'includes/header.php';
 ?>
 
-<div class="error-404-container">
-    <div class="error-404-content">
-        <div class="error-illustration">
-            <div class="error-code">404</div>
-            <div class="error-icon">🔍</div>
-            <div class="error-message-graphic">Lapa nav atrasta</div>
+<div class="error-container">
+    <div class="error-content">
+        <div class="error-icon">
+            <span class="error-code">404</span>
+            <span class="error-symbol">📄</span>
         </div>
         
-        <div class="error-main-content">
-            <h1>Ups! Lapa nav atrasta</h1>
-            
-            <div class="error-description">
-                <p>Lapa, kuru meklējāt, neeksistē vai ir pārvietota.</p>
-                <?php if (!empty($requestedUrl)): ?>
-                    <p class="requested-url">
-                        <strong>Meklētā adrese:</strong> 
-                        <code><?php echo htmlspecialchars($requestedUrl); ?></code>
-                    </p>
-                <?php endif; ?>
+        <h1>Lapa nav atrasta</h1>
+        
+        <div class="error-message">
+            <p>Diemžēl meklētā lapa nav atrasta sistēmā.</p>
+            <p>Meklētais URL: <code><?php echo htmlspecialchars($requestedUrl); ?></code></p>
+        </div>
+        
+        <div class="error-details">
+            <div class="details-card">
+                <h3>Kas varētu būt noticis?</h3>
+                <ul>
+                    <li>Lapa ir dzēsta vai pārvietota</li>
+                    <li>URL adrese ir nepareizi ierakstīta</li>
+                    <li>Saite ir novecojusi</li>
+                    <li>Jums nav atļaujas piekļūt šai lapai</li>
+                </ul>
             </div>
             
-            <?php if (!$isLoggedIn): ?>
-                <!-- Nepieslēgtiem lietotājiem -->
-                <div class="login-suggestion">
-                    <h3>Vai jūs meklējāt sistēmu?</h3>
-                    <p>Lai piekļūtu AVOTI Task Management sistēmai, jums jāpieslēdzas.</p>
-                    <a href="login.php" class="btn btn-primary btn-lg">
-                        <span>🔐</span> Pieslēgties sistēmai
-                    </a>
-                </div>
-                
-            <?php else: ?>
-                <!-- Pieslēgtiem lietotājiem -->
-                <div class="suggestions-section">
-                    <h3>Iespējams, jūs meklējāt:</h3>
-                    <div class="suggestions-grid">
-                        <?php foreach ($suggestions as $suggestion): ?>
-                            <a href="<?php echo $suggestion['url']; ?>" class="suggestion-card">
-                                <h4><?php echo htmlspecialchars($suggestion['title']); ?></h4>
-                                <p><?php echo htmlspecialchars($suggestion['description']); ?></p>
-                            </a>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
-                
-                <div class="quick-actions">
-                    <h3>Ātras darbības</h3>
-                    <div class="action-buttons">
-                        <a href="index.php" class="btn btn-primary">
-                            <span>🏠</span> Sākums
-                        </a>
-                        
-                        <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
-                            <a href="create_task.php" class="btn btn-success">
-                                <span>➕</span> Izveidot uzdevumu
-                            </a>
-                            <a href="problems.php" class="btn btn-warning">
-                                <span>⚠️</span> Problēmas
-                            </a>
-                        <?php elseif (hasRole(ROLE_MECHANIC)): ?>
-                            <a href="my_tasks.php" class="btn btn-primary">
-                                <span>🔧</span> Mani uzdevumi
-                            </a>
-                        <?php elseif (hasRole(ROLE_OPERATOR)): ?>
-                            <a href="report_problem.php" class="btn btn-danger">
-                                <span>📋</span> Ziņot problēmu
-                            </a>
-                        <?php endif; ?>
-                        
-                        <button onclick="goBack()" class="btn btn-secondary">
-                            <span>⬅️</span> Atgriezties
-                        </button>
-                    </div>
-                </div>
+            <div class="details-card">
+                <h3>Ko jūs varat darīt?</h3>
+                <ul>
+                    <li>Pārbaudīt URL adresi uz kļūdām</li>
+                    <li>Izmantot navigācijas izvēlni</li>
+                    <li>Atgriezties uz sākuma lapu</li>
+                    <li>Sazināties ar tehnikas atbalstu</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="action-buttons">
+            <a href="index.php" class="btn btn-primary">
+                <span>🏠</span> Sākuma lapa
+            </a>
+            
+            <button onclick="goBack()" class="btn btn-secondary">
+                <span>⬅️</span> Atpakaļ
+            </button>
+            
+            <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
+                <a href="tasks.php" class="btn btn-info">
+                    <span>📋</span> Uzdevumi
+                </a>
+            <?php elseif (hasRole(ROLE_MECHANIC)): ?>
+                <a href="my_tasks.php" class="btn btn-success">
+                    <span>🔧</span> Mani uzdevumi
+                </a>
+            <?php elseif (hasRole(ROLE_OPERATOR)): ?>
+                <a href="report_problem.php" class="btn btn-warning">
+                    <span>⚠️</span> Ziņot problēmu
+                </a>
             <?php endif; ?>
-            
-            <div class="search-section">
-                <h3>Vai meklēt kaut ko konkrētu?</h3>
-                <div class="search-options">
-                    <?php if ($isLoggedIn): ?>
-                        <div class="search-grid">
-                            <div class="search-category">
-                                <h4>📋 Uzdevumi</h4>
-                                <ul>
-                                    <li><a href="tasks.php">Visi uzdevumi</a></li>
-                                    <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
-                                        <li><a href="create_task.php">Izveidot uzdevumu</a></li>
-                                    <?php endif; ?>
-                                    <?php if (hasRole(ROLE_MECHANIC)): ?>
-                                        <li><a href="my_tasks.php">Mani uzdevumi</a></li>
-                                    <?php endif; ?>
-                                </ul>
-                            </div>
-                            
-                            <div class="search-category">
-                                <h4>⚠️ Problēmas</h4>
-                                <ul>
-                                    <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
-                                        <li><a href="problems.php">Visas problēmas</a></li>
-                                    <?php endif; ?>
-                                    <?php if (hasRole(ROLE_OPERATOR)): ?>
-                                        <li><a href="report_problem.php">Ziņot problēmu</a></li>
-                                        <li><a href="my_problems.php">Manas problēmas</a></li>
-                                    <?php endif; ?>
-                                </ul>
-                            </div>
-                            
-                            <div class="search-category">
-                                <h4>👤 Profils</h4>
-                                <ul>
-                                    <li><a href="profile.php">Mans profils</a></li>
-                                    <li><a href="notifications.php">Paziņojumi</a></li>
-                                    <?php if (hasRole(ROLE_ADMIN)): ?>
-                                        <li><a href="users.php">Lietotāji</a></li>
-                                        <li><a href="reports.php">Atskaites</a></li>
-                                    <?php endif; ?>
-                                </ul>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <div class="help-section">
-                <h3>Nepieciešama palīdzība?</h3>
-                <div class="help-grid">
-                    <div class="help-item">
-                        <strong>📞 Tālrunis</strong>
-                        <span>+371 1234-5678</span>
+        </div>
+        
+        <div class="search-section">
+            <h3>Meklēt sistēmā</h3>
+            <div class="search-form">
+                <form method="GET" action="search.php">
+                    <div class="search-input-group">
+                        <input type="text" name="q" placeholder="Meklēt uzdevumos, problēmās..." class="form-control">
+                        <button type="submit" class="btn btn-primary">Meklēt</button>
                     </div>
-                    <div class="help-item">
-                        <strong>📧 E-pasts</strong>
-                        <span>support@avoti.lv</span>
-                    </div>
-                    <div class="help-item">
-                        <strong>🕒 Darba laiks</strong>
-                        <span>P-Pk 8:00-17:00</span>
-                    </div>
-                </div>
+                </form>
             </div>
         </div>
         
-        <div class="error-footer">
-            <div class="error-details">
-                <details>
-                    <summary>Tehniskā informācija</summary>
-                    <div class="tech-info">
-                        <div class="tech-item">
-                            <span class="label">Kļūdas kods:</span>
-                            <span class="value">404 - Not Found</span>
-                        </div>
-                        <div class="tech-item">
-                            <span class="label">Meklētā adrese:</span>
-                            <span class="value"><?php echo htmlspecialchars($requestedUrl); ?></span>
-                        </div>
-                        <div class="tech-item">
-                            <span class="label">Servera laiks:</span>
-                            <span class="value"><?php echo date('d.m.Y H:i:s'); ?></span>
-                        </div>
-                        <?php if ($isLoggedIn): ?>
-                            <div class="tech-item">
-                                <span class="label">Lietotājs:</span>
-                                <span class="value"><?php echo htmlspecialchars($currentUser['lietotajvards']); ?></span>
-                            </div>
-                            <div class="tech-item">
-                                <span class="label">Loma:</span>
-                                <span class="value"><?php echo htmlspecialchars($currentUser['loma']); ?></span>
-                            </div>
-                        <?php endif; ?>
-                        <div class="tech-item">
-                            <span class="label">IP adrese:</span>
-                            <span class="value"><?php echo $_SERVER['REMOTE_ADDR'] ?? 'Nav zināma'; ?></span>
-                        </div>
-                        <div class="tech-item">
-                            <span class="label">Pārlūks:</span>
-                            <span class="value"><?php echo htmlspecialchars(substr($_SERVER['HTTP_USER_AGENT'] ?? 'Nav zināms', 0, 60) . '...'); ?></span>
-                        </div>
-                    </div>
-                </details>
+        <div class="quick-links">
+            <h3>Ātras saites</h3>
+            <div class="links-grid">
+                <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
+                    <a href="tasks.php" class="quick-link">
+                        <span class="link-icon">📋</span>
+                        <span class="link-text">Uzdevumi</span>
+                    </a>
+                    <a href="problems.php" class="quick-link">
+                        <span class="link-icon">⚠️</span>
+                        <span class="link-text">Problēmas</span>
+                    </a>
+                    <a href="create_task.php" class="quick-link">
+                        <span class="link-icon">➕</span>
+                        <span class="link-text">Jauns uzdevums</span>
+                    </a>
+                    <?php if (hasRole(ROLE_ADMIN)): ?>
+                        <a href="reports.php" class="quick-link">
+                            <span class="link-icon">📊</span>
+                            <span class="link-text">Atskaites</span>
+                        </a>
+                        <a href="users.php" class="quick-link">
+                            <span class="link-icon">👥</span>
+                            <span class="link-text">Lietotāji</span>
+                        </a>
+                        <a href="settings.php" class="quick-link">
+                            <span class="link-icon">⚙️</span>
+                            <span class="link-text">Iestatījumi</span>
+                        </a>
+                    <?php endif; ?>
+                <?php elseif (hasRole(ROLE_MECHANIC)): ?>
+                    <a href="my_tasks.php" class="quick-link">
+                        <span class="link-icon">🔧</span>
+                        <span class="link-text">Mani uzdevumi</span>
+                    </a>
+                    <a href="completed_tasks.php" class="quick-link">
+                        <span class="link-icon">✅</span>
+                        <span class="link-text">Pabeigto uzdevumu vēsture</span>
+                    </a>
+                <?php elseif (hasRole(ROLE_OPERATOR)): ?>
+                    <a href="report_problem.php" class="quick-link">
+                        <span class="link-icon">⚠️</span>
+                        <span class="link-text">Ziņot problēmu</span>
+                    </a>
+                    <a href="my_problems.php" class="quick-link">
+                        <span class="link-icon">📝</span>
+                        <span class="link-text">Manas problēmas</span>
+                    </a>
+                <?php endif; ?>
+                
+                <a href="notifications.php" class="quick-link">
+                    <span class="link-icon">🔔</span>
+                    <span class="link-text">Paziņojumi</span>
+                </a>
+                <a href="profile.php" class="quick-link">
+                    <span class="link-icon">👤</span>
+                    <span class="link-text">Profils</span>
+                </a>
+            </div>
+        </div>
+        
+        <div class="help-section">
+            <h3>Nepieciešama palīdzība?</h3>
+            <div class="help-contacts">
+                <div class="contact-item">
+                    <strong>📞 Tehniskā atbalsta tālrunis:</strong>
+                    <span>+371 1234-5678</span>
+                </div>
+                <div class="contact-item">
+                    <strong>📧 E-pasts:</strong>
+                    <span>support@avoti.lv</span>
+                </div>
             </div>
         </div>
     </div>
@@ -238,11 +217,19 @@ function goBack() {
     if (window.history.length > 1) {
         window.history.back();
     } else {
-        window.location.href = '<?php echo $isLoggedIn ? "index.php" : "login.php"; ?>';
+        window.location.href = 'index.php';
     }
 }
 
-// Keyboard shortcuts
+// Automātiski fokusēt uz meklēšanas lauku
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.querySelector('input[name="q"]');
+    if (searchInput) {
+        searchInput.focus();
+    }
+});
+
+// Tastatūras saīsnes
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         goBack();
@@ -250,153 +237,100 @@ document.addEventListener('keydown', function(e) {
     
     if (e.altKey && e.key === 'h') {
         e.preventDefault();
-        window.location.href = '<?php echo $isLoggedIn ? "index.php" : "login.php"; ?>';
+        window.location.href = 'index.php';
     }
 });
-
-// Auto redirect after 60 seconds for non-logged users
-<?php if (!$isLoggedIn): ?>
-setTimeout(function() {
-    if (confirm('Vai vēlaties doties uz pieslēgšanās lapu?')) {
-        window.location.href = 'login.php';
-    }
-}, 60000);
-<?php endif; ?>
 </script>
 
 <style>
-.error-404-container {
+.error-container {
     min-height: calc(100vh - 200px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     padding: var(--spacing-lg);
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
 }
 
-.error-404-content {
-    max-width: 1000px;
-    margin: 0 auto;
+.error-content {
+    max-width: 900px;
+    width: 100%;
     background: var(--white);
     border-radius: var(--border-radius-lg);
     box-shadow: var(--shadow-lg);
-    overflow: hidden;
-}
-
-.error-illustration {
-    background: linear-gradient(135deg, var(--danger-color), #ff6b6b);
-    color: var(--white);
-    text-align: center;
     padding: var(--spacing-xl);
-}
-
-.error-code {
-    font-size: 5rem;
-    font-weight: bold;
-    margin-bottom: var(--spacing-sm);
-    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    text-align: center;
 }
 
 .error-icon {
+    margin-bottom: var(--spacing-lg);
+}
+
+.error-code {
+    font-size: 4rem;
+    font-weight: bold;
+    color: var(--warning-color);
+    display: block;
+    margin-bottom: var(--spacing-sm);
+}
+
+.error-symbol {
     font-size: 3rem;
-    margin-bottom: var(--spacing-md);
+    display: block;
+    margin-bottom: var(--spacing-lg);
 }
 
-.error-message-graphic {
-    font-size: 1.5rem;
-    font-weight: 500;
-}
-
-.error-main-content {
-    padding: var(--spacing-xl);
-}
-
-.error-main-content h1 {
-    text-align: center;
+.error-content h1 {
     color: var(--gray-800);
     margin-bottom: var(--spacing-lg);
     font-size: 2rem;
 }
 
-.error-description {
-    text-align: center;
+.error-message {
     margin-bottom: var(--spacing-xl);
     color: var(--gray-700);
     font-size: 1.1rem;
     line-height: 1.6;
 }
 
-.requested-url {
+.error-message code {
     background: var(--gray-100);
-    padding: var(--spacing-md);
-    border-radius: var(--border-radius);
-    margin-top: var(--spacing-md);
+    padding: 2px 6px;
+    border-radius: 3px;
     font-family: monospace;
-    word-break: break-all;
+    color: var(--danger-color);
 }
 
-.login-suggestion {
-    text-align: center;
-    background: var(--gray-100);
-    padding: var(--spacing-xl);
-    border-radius: var(--border-radius);
-    margin-bottom: var(--spacing-lg);
-}
-
-.login-suggestion h3 {
-    color: var(--gray-800);
-    margin-bottom: var(--spacing-md);
-}
-
-.suggestions-section {
-    margin-bottom: var(--spacing-xl);
-}
-
-.suggestions-section h3 {
-    color: var(--gray-800);
-    margin-bottom: var(--spacing-lg);
-    text-align: center;
-}
-
-.suggestions-grid {
+.error-details {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: var(--spacing-md);
-    margin-bottom: var(--spacing-lg);
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-xl);
+    text-align: left;
 }
 
-.suggestion-card {
+.details-card {
     background: var(--gray-100);
     padding: var(--spacing-lg);
     border-radius: var(--border-radius);
-    text-decoration: none;
+    border-left: 4px solid var(--warning-color);
+}
+
+.details-card h3 {
     color: var(--gray-800);
-    transition: all 0.3s ease;
-    border-left: 4px solid var(--secondary-color);
+    margin-bottom: var(--spacing-md);
+    font-size: 1.2rem;
 }
 
-.suggestion-card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
-    background: var(--gray-200);
-}
-
-.suggestion-card h4 {
-    margin: 0 0 var(--spacing-sm) 0;
-    color: var(--secondary-color);
-}
-
-.suggestion-card p {
+.details-card ul {
     margin: 0;
-    color: var(--gray-600);
-    font-size: var(--font-size-sm);
+    padding-left: var(--spacing-lg);
 }
 
-.quick-actions {
-    text-align: center;
-    margin-bottom: var(--spacing-xl);
-}
-
-.quick-actions h3 {
-    color: var(--gray-800);
-    margin-bottom: var(--spacing-lg);
+.details-card li {
+    margin-bottom: var(--spacing-sm);
+    color: var(--gray-700);
+    line-height: 1.5;
 }
 
 .action-buttons {
@@ -404,164 +338,125 @@ setTimeout(function() {
     gap: var(--spacing-md);
     justify-content: center;
     flex-wrap: wrap;
-}
-
-.action-buttons .btn {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-xs);
-    padding: var(--spacing-md) var(--spacing-lg);
+    margin-bottom: var(--spacing-xl);
 }
 
 .search-section {
-    margin-bottom: var(--spacing-xl);
+    background: var(--gray-100);
+    padding: var(--spacing-lg);
+    border-radius: var(--border-radius);
+    margin-bottom: var(--spacing-lg);
 }
 
 .search-section h3 {
     color: var(--gray-800);
-    margin-bottom: var(--spacing-lg);
-    text-align: center;
+    margin-bottom: var(--spacing-md);
 }
 
-.search-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--spacing-lg);
+.search-input-group {
+    display: flex;
+    gap: var(--spacing-sm);
+    max-width: 400px;
+    margin: 0 auto;
 }
 
-.search-category {
-    background: var(--gray-50);
-    padding: var(--spacing-lg);
-    border-radius: var(--border-radius);
+.search-input-group input {
+    flex: 1;
 }
 
-.search-category h4 {
-    margin: 0 0 var(--spacing-md) 0;
-    color: var(--gray-800);
-    font-size: 1.1rem;
+.quick-links {
+    margin-bottom: var(--spacing-xl);
 }
 
-.search-category ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-}
-
-.search-category li {
-    margin-bottom: var(--spacing-xs);
-}
-
-.search-category a {
-    color: var(--secondary-color);
-    text-decoration: none;
-    font-size: var(--font-size-sm);
-}
-
-.search-category a:hover {
-    text-decoration: underline;
-}
-
-.help-section {
-    text-align: center;
-    background: var(--gray-50);
-    padding: var(--spacing-lg);
-    border-radius: var(--border-radius);
-    margin-bottom: var(--spacing-lg);
-}
-
-.help-section h3 {
+.quick-links h3 {
     color: var(--gray-800);
     margin-bottom: var(--spacing-md);
 }
 
-.help-grid {
+.links-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: var(--spacing-md);
 }
 
-.help-item {
+.quick-link {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-xs);
-}
-
-.help-item strong {
+    align-items: center;
+    padding: var(--spacing-md);
+    background: var(--gray-100);
+    border-radius: var(--border-radius);
+    text-decoration: none;
     color: var(--gray-700);
-    font-size: var(--font-size-sm);
+    transition: all 0.3s ease;
 }
 
-.help-item span {
-    color: var(--secondary-color);
+.quick-link:hover {
+    background: var(--secondary-color);
+    color: var(--white);
+    transform: translateY(-2px);
+}
+
+.link-icon {
+    font-size: 2rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+.link-text {
+    font-size: var(--font-size-sm);
+    text-align: center;
     font-weight: 500;
 }
 
-.error-footer {
+.help-section {
     background: var(--gray-100);
     padding: var(--spacing-lg);
-    border-top: 1px solid var(--gray-300);
-}
-
-.error-details details {
-    max-width: 600px;
-    margin: 0 auto;
-}
-
-.error-details summary {
-    cursor: pointer;
-    font-weight: 500;
-    color: var(--gray-700);
-    text-align: center;
-    padding: var(--spacing-sm);
-}
-
-.tech-info {
-    background: var(--white);
     border-radius: var(--border-radius);
-    padding: var(--spacing-lg);
-    margin-top: var(--spacing-md);
-    border: 1px solid var(--gray-300);
+    text-align: left;
 }
 
-.tech-item {
+.help-section h3 {
+    text-align: center;
+    color: var(--gray-800);
+    margin-bottom: var(--spacing-md);
+}
+
+.help-contacts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.contact-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: var(--spacing-xs) 0;
-    border-bottom: 1px solid var(--gray-200);
-    font-size: var(--font-size-sm);
+    padding: var(--spacing-sm);
+    background: var(--white);
+    border-radius: var(--border-radius);
+    border-left: 3px solid var(--info-color);
 }
 
-.tech-item:last-child {
-    border-bottom: none;
-}
-
-.tech-item .label {
-    font-weight: 500;
-    color: var(--gray-600);
-}
-
-.tech-item .value {
-    color: var(--gray-800);
-    font-family: monospace;
-    word-break: break-all;
-}
-
-/* Responsive */
+/* Responsive dizains */
 @media (max-width: 768px) {
-    .error-404-container {
-        padding: var(--spacing-md);
-    }
-    
-    .error-main-content {
+    .error-content {
         padding: var(--spacing-lg);
+        margin: var(--spacing-md);
     }
     
     .error-code {
         font-size: 3rem;
     }
     
-    .suggestions-grid {
+    .error-symbol {
+        font-size: 2rem;
+    }
+    
+    .error-content h1 {
+        font-size: 1.5rem;
+    }
+    
+    .error-details {
         grid-template-columns: 1fr;
     }
     
@@ -575,15 +470,15 @@ setTimeout(function() {
         max-width: 300px;
     }
     
-    .search-grid {
-        grid-template-columns: 1fr;
+    .search-input-group {
+        flex-direction: column;
     }
     
-    .help-grid {
-        grid-template-columns: 1fr;
+    .links-grid {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     }
     
-    .tech-item {
+    .contact-item {
         flex-direction: column;
         align-items: flex-start;
         gap: var(--spacing-xs);
