@@ -261,6 +261,22 @@ try {
         $where_clause
         $order_clause
     ";
+
+// Uzdevumu saraksts (tikai ikdienas uzdevumi)
+    $sql = "
+        SELECT u.*, 
+               v.nosaukums as vietas_nosaukums,
+               i.nosaukums as iekartas_nosaukums,
+               k.nosaukums as kategorijas_nosaukums,
+               (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
+               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
+        FROM uzdevumi u
+        LEFT JOIN vietas v ON u.vietas_id = v.id
+        LEFT JOIN iekartas i ON u.iekartas_id = i.id
+        LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
+        $where_clause AND u.veids = 'Ikdienas'
+        $order_clause
+    ";
     
     $params[] = $currentUser['id']; // Priekš aktīvs_darbs subquery
     $stmt = $pdo->prepare($sql);

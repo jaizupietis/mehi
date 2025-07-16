@@ -197,19 +197,21 @@ try {
     
     $where_clause = !empty($where_conditions) ? 'WHERE ' . implode(' AND ', $where_conditions) : '';
     
-    // Galvenais vaicājums
+    // Galvenais vaicājums (bez regulāro uzdevumu ierobežojuma)
     $sql = "
         SELECT u.*, 
                v.nosaukums as vietas_nosaukums,
                i.nosaukums as iekartas_nosaukums,
                CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards,
                CONCAT(e.vards, ' ', e.uzvards) as izveidoja_vards,
+               r.periodicitate,
                (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN lietotaji l ON u.piešķirts_id = l.id
         LEFT JOIN lietotaji e ON u.izveidoja_id = e.id
+        LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
         $where_clause
         ORDER BY u.$sort $order
         LIMIT $limit OFFSET $offset
@@ -227,6 +229,7 @@ try {
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN lietotaji l ON u.piešķirts_id = l.id
         LEFT JOIN lietotaji e ON u.izveidoja_id = e.id
+        LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
         $where_clause
     ";
     $count_stmt = $pdo->prepare($count_sql);

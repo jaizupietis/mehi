@@ -26,13 +26,13 @@ try {
     $vietas = $stmt->fetchAll();
     
     // Būvēt filtru nosacījumus
-    $date_filter = "DATE(izveidots) BETWEEN ? AND ?";
+    $date_filter = "DATE(u.izveidots) BETWEEN ? AND ?";
     $date_params = [$date_from, $date_to];
     
-    $mechanic_filter = $selected_mechanic > 0 ? "AND piešķirts_id = ?" : "";
+    $mechanic_filter = $selected_mechanic > 0 ? "AND u.piešķirts_id = ?" : "";
     $mechanic_params = $selected_mechanic > 0 ? [$selected_mechanic] : [];
     
-    $location_filter = $selected_location > 0 ? "AND vietas_id = ?" : "";
+    $location_filter = $selected_location > 0 ? "AND u.vietas_id = ?" : "";
     $location_params = $selected_location > 0 ? [$selected_location] : [];
     
     $all_params = array_merge($date_params, $mechanic_params, $location_params);
@@ -41,13 +41,13 @@ try {
     $stmt = $pdo->prepare("
         SELECT 
             COUNT(*) as kopā_uzdevumi,
-            SUM(CASE WHEN statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_uzdevumi,
-            SUM(CASE WHEN statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi_uzdevumi,
-            SUM(CASE WHEN statuss = 'Atcelts' THEN 1 ELSE 0 END) as atcelti_uzdevumi,
-            SUM(CASE WHEN prioritate = 'Kritiska' THEN 1 ELSE 0 END) as kritiski_uzdevumi,
-            AVG(CASE WHEN faktiskais_ilgums IS NOT NULL THEN faktiskais_ilgums END) as vidējais_ilgums,
-            SUM(CASE WHEN jabeidz_lidz < NOW() AND statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavētie
-        FROM uzdevumi 
+            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_uzdevumi,
+            SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi_uzdevumi,
+            SUM(CASE WHEN u.statuss = 'Atcelts' THEN 1 ELSE 0 END) as atcelti_uzdevumi,
+            SUM(CASE WHEN u.prioritate = 'Kritiska' THEN 1 ELSE 0 END) as kritiski_uzdevumi,
+            AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums,
+            SUM(CASE WHEN u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavētie
+        FROM uzdevumi u
         WHERE $date_filter $mechanic_filter $location_filter
     ");
     $stmt->execute($all_params);
@@ -62,12 +62,12 @@ try {
     $stmt = $pdo->prepare("
         SELECT 
             COUNT(*) as kopā_problēmas,
-            SUM(CASE WHEN statuss = 'Jauna' THEN 1 ELSE 0 END) as jaunas_problēmas,
-            SUM(CASE WHEN statuss = 'Apskatīta' THEN 1 ELSE 0 END) as apskatītas_problēmas,
-            SUM(CASE WHEN statuss = 'Pārvērsta uzdevumā' THEN 1 ELSE 0 END) as pārvērstas_problēmas,
-            SUM(CASE WHEN prioritate = 'Kritiska' THEN 1 ELSE 0 END) as kritiskās_problēmas
-        FROM problemas 
-        WHERE $date_filter " . ($selected_location > 0 ? "AND vietas_id = ?" : "")
+            SUM(CASE WHEN p.statuss = 'Jauna' THEN 1 ELSE 0 END) as jaunas_problēmas,
+            SUM(CASE WHEN p.statuss = 'Apskatīta' THEN 1 ELSE 0 END) as apskatītas_problēmas,
+            SUM(CASE WHEN p.statuss = 'Pārvērsta uzdevumā' THEN 1 ELSE 0 END) as pārvērstas_problēmas,
+            SUM(CASE WHEN p.prioritate = 'Kritiska' THEN 1 ELSE 0 END) as kritiskās_problēmas
+        FROM problemas p
+        WHERE DATE(p.izveidots) BETWEEN ? AND ? " . ($selected_location > 0 ? "AND p.vietas_id = ?" : "")
     );
     $stmt->execute($problem_date_params);
     $problēmu_statistika = $stmt->fetch();
@@ -124,14 +124,14 @@ try {
     // 5. Prioritāšu sadalījums
     $stmt = $pdo->prepare("
         SELECT 
-            prioritate,
+            u.prioritate,
             COUNT(*) as skaits,
-            SUM(CASE WHEN statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti,
-            AVG(CASE WHEN faktiskais_ilgums IS NOT NULL THEN faktiskais_ilgums END) as vidējais_ilgums
-        FROM uzdevumi 
+            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti,
+            AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums
+        FROM uzdevumi u
         WHERE $date_filter $mechanic_filter $location_filter
-        GROUP BY prioritate
-        ORDER BY FIELD(prioritate, 'Kritiska', 'Augsta', 'Vidēja', 'Zema')
+        GROUP BY u.prioritate
+        ORDER BY FIELD(u.prioritate, 'Kritiska', 'Augsta', 'Vidēja', 'Zema')
     ");
     $stmt->execute($all_params);
     $prioritāšu_sadalījums = $stmt->fetchAll();
@@ -156,24 +156,39 @@ try {
     // 7. Laika analīze (pa dienām)
     $stmt = $pdo->prepare("
         SELECT 
-            DATE(izveidots) as datums,
+            DATE(u.izveidots) as datums,
             COUNT(*) as izveidoti_uzdevumi,
-            SUM(CASE WHEN statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_uzdevumi,
-            COUNT(DISTINCT piešķirts_id) as aktīvi_mehāniķi
-        FROM uzdevumi 
+            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_uzdevumi,
+            COUNT(DISTINCT u.piešķirts_id) as aktīvi_mehāniķi
+        FROM uzdevumi u
         WHERE $date_filter $mechanic_filter $location_filter
-        GROUP BY DATE(izveidots)
+        GROUP BY DATE(u.izveidots)
         ORDER BY datums DESC
         LIMIT 30
     ");
     $stmt->execute($all_params);
     $dienas_statistika = $stmt->fetchAll();
     
+    // 8. Regulāro uzdevumu statistika
+    $stmt = $pdo->prepare("
+        SELECT 
+            COUNT(*) as kopā_regulārie_šabloni,
+            SUM(CASE WHEN r.aktīvs = 1 THEN 1 ELSE 0 END) as aktīvie_šabloni,
+            COUNT(u.id) as regulāro_uzdevumu_skaits,
+            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_regulāro_skaits
+        FROM regularo_uzdevumu_sabloni r
+        LEFT JOIN uzdevumi u ON r.id = u.regulara_uzdevuma_id AND $date_filter
+        WHERE 1=1
+    ");
+    $stmt->execute($date_params);
+    $regulāro_statistika = $stmt->fetch();
+    
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot atskaites: " . $e->getMessage();
     // Inicializēt tukšus masīvus kļūdas gadījumā
     $vispārīgā_statistika = ['kopā_uzdevumi' => 0, 'pabeigti_uzdevumi' => 0, 'aktīvi_uzdevumi' => 0, 'atcelti_uzdevumi' => 0, 'kritiski_uzdevumi' => 0, 'vidējais_ilgums' => 0, 'nokavētie' => 0];
     $problēmu_statistika = ['kopā_problēmas' => 0, 'jaunas_problēmas' => 0, 'apskatītas_problēmas' => 0, 'pārvērstas_problēmas' => 0, 'kritiskās_problēmas' => 0];
+    $regulāro_statistika = ['kopā_regulārie_šabloni' => 0, 'aktīvie_šabloni' => 0, 'regulāro_uzdevumu_skaits' => 0, 'pabeigto_regulāro_skaits' => 0];
     $mehāniķu_produktivitāte = $vietu_statistika = $prioritāšu_sadalījums = $kategoriju_statistika = $dienas_statistika = [];
 }
 
@@ -278,6 +293,16 @@ include 'includes/header.php';
     <div class="stat-card" style="border-left-color: var(--secondary-color);">
         <div class="stat-number" style="color: var(--secondary-color);"><?php echo $problēmu_statistika['kopā_problēmas']; ?></div>
         <div class="stat-label">Kopā problēmas</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--primary-color);">
+        <div class="stat-number" style="color: var(--primary-color);"><?php echo $regulāro_statistika['aktīvie_šabloni']; ?></div>
+        <div class="stat-label">Aktīvie regulārie šabloni</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--success-color);">
+        <div class="stat-number" style="color: var(--success-color);"><?php echo $regulāro_statistika['pabeigto_regulāro_skaits']; ?></div>
+        <div class="stat-label">Pabeigti regulārie uzdevumi</div>
     </div>
 </div>
 

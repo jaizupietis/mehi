@@ -21,7 +21,7 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
         <div class="container">
             <div class="header-content">
                 <a href="index.php" class="logo">
-                    AVOTI TMS
+                    AVOTI UPS
                 </a>
                 
                 <div class="user-info">
@@ -56,7 +56,6 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
                     <li><a href="tasks.php" <?php echo basename($_SERVER['PHP_SELF']) == 'tasks.php' ? 'class="active"' : ''; ?>>Uzdevumi</a></li>
                     <li><a href="problems.php" <?php echo basename($_SERVER['PHP_SELF']) == 'problems.php' ? 'class="active"' : ''; ?>>Problēmas</a></li>
                     <li><a href="create_task.php" <?php echo basename($_SERVER['PHP_SELF']) == 'create_task.php' ? 'class="active"' : ''; ?>>Izveidot uzdevumu</a></li>
-                    <li><a href="regular_tasks.php" <?php echo basename($_SERVER['PHP_SELF']) == 'regular_tasks.php' ? 'class="active"' : ''; ?>>Regulārie uzdevumi</a></li>
                 <?php endif; ?>
                 
                 <?php if (hasRole(ROLE_OPERATOR)): ?>
@@ -66,7 +65,6 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
                 
                 <?php if (hasRole(ROLE_MECHANIC)): ?>
                     <li><a href="my_tasks.php" <?php echo basename($_SERVER['PHP_SELF']) == 'my_tasks.php' ? 'class="active"' : ''; ?>>Mani uzdevumi</a></li>
-                    <li><a href="regular_tasks_mechanic.php" <?php echo basename($_SERVER['PHP_SELF']) == 'regular_tasks_mechanic.php' ? 'class="active"' : ''; ?>>Regulārie uzdevumi</a></li>
                     <li><a href="completed_tasks.php" <?php echo basename($_SERVER['PHP_SELF']) == 'completed_tasks.php' ? 'class="active"' : ''; ?>>Pabeigto uzdevumu vēsture</a></li>
                 <?php endif; ?>
                 

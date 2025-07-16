@@ -32,6 +32,23 @@ try {
     // Regulāro uzdevumu šabloni
     $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
     $regularie_sabloni = $stmt->fetchAll();
+
+	// Regulāro uzdevumu šabloni
+    $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
+    $regularie_sabloni = $stmt->fetchAll();
+    
+    // Brīvāko mehāniķu saraksts
+    $stmt = $pdo->query("
+        SELECT l.id, 
+               CONCAT(l.vards, ' ', l.uzvards) as pilns_vards,
+               COUNT(u.id) as aktīvo_uzdevumu_skaits
+        FROM lietotaji l
+        LEFT JOIN uzdevumi u ON l.id = u.piešķirts_id AND u.statuss IN ('Jauns', 'Procesā')
+        WHERE l.loma = 'Mehāniķis' AND l.statuss = 'Aktīvs'
+        GROUP BY l.id
+        ORDER BY aktīvo_uzdevumu_skaits ASC, l.vards, l.uzvards
+    ");
+    $mehaniki_ar_statistiku = $stmt->fetchAll();
     
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot datus: " . $e->getMessage();

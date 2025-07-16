@@ -12,18 +12,18 @@ try {
     if (hasRole([ROLE_ADMIN, ROLE_MANAGER])) {
         // Administratora un menedžera statistika
         
-        // Kopējie uzdevumi
-        $stmt = $pdo->query("SELECT COUNT(*) FROM uzdevumi");
+        // Kopējie uzdevumi (ikdienas)
+        $stmt = $pdo->query("SELECT COUNT(*) FROM uzdevumi WHERE veids = 'Ikdienas'");
         $stats['total_tasks'] = $stmt->fetchColumn();
         
-        // Aktīvie uzdevumi
-        $stmt = $pdo->query("SELECT COUNT(*) FROM uzdevumi WHERE statuss IN ('Jauns', 'Procesā')");
+        // Aktīvie uzdevumi (ikdienas)
+        $stmt = $pdo->query("SELECT COUNT(*) FROM uzdevumi WHERE veids = 'Ikdienas' AND statuss IN ('Jauns', 'Procesā')");
         $stats['active_tasks'] = $stmt->fetchColumn();
         
-        // Pabeigto uzdevumu šomēnes
+        // Pabeigto uzdevumu šomēnes (ikdienas)
         $stmt = $pdo->query("
             SELECT COUNT(*) FROM uzdevumi 
-            WHERE statuss = 'Pabeigts' 
+            WHERE veids = 'Ikdienas' AND statuss = 'Pabeigts' 
             AND MONTH(beigu_laiks) = MONTH(NOW()) 
             AND YEAR(beigu_laiks) = YEAR(NOW())
         ");
@@ -41,7 +41,26 @@ try {
         $stmt = $pdo->query("SELECT COUNT(*) FROM lietotaji WHERE loma = 'Mehāniķis' AND statuss = 'Aktīvs'");
         $stats['active_mechanics'] = $stmt->fetchColumn();
         
-        // Jaunākie uzdevumi
+        // Regulārie uzdevumi
+        $stmt = $pdo->query("SELECT COUNT(*) FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1");
+        $stats['active_regular_templates'] = $stmt->fetchColumn();
+        
+        // Šodienas regulārie uzdevumi
+        $stmt = $pdo->query("SELECT COUNT(*) FROM uzdevumi WHERE veids = 'Regulārais' AND DATE(izveidots) = CURDATE()");
+        $stats['todays_regular_tasks'] = $stmt->fetchColumn();
+    
+    	// Regulāro uzdevumu statistika
+   			 $stmt = $pdo->query("
+        		SELECT 
+           			 COUNT(*) as kopā_regulārie_šabloni,
+            		SUM(CASE WHEN aktīvs = 1 THEN 1 ELSE 0 END) as aktīvie_šabloni,
+            		(SELECT COUNT(*) FROM uzdevumi WHERE veids = 'Regulārais' AND DATE(izveidots) = CURDATE()) as šodienas_regulārie,
+            		(SELECT COUNT(*) FROM uzdevumi WHERE veids = 'Regulārais' AND statuss = 'Pabeigts' AND MONTH(beigu_laiks) = MONTH(NOW()) AND YEAR(beigu_laiks) = YEAR(NOW())) as pabeigti_regulārie_šomēnes
+        		FROM regularo_uzdevumu_sabloni
+   					 ");
+    		$regulāro_statistika = $stmt->fetch();
+        
+        // Jaunākie uzdevumi (ikdienas)
         $stmt = $pdo->prepare("
             SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums,
                    CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards
@@ -49,11 +68,29 @@ try {
             LEFT JOIN vietas v ON u.vietas_id = v.id
             LEFT JOIN iekartas i ON u.iekartas_id = i.id
             LEFT JOIN lietotaji l ON u.piešķirts_id = l.id
+            WHERE u.veids = 'Ikdienas'
             ORDER BY u.izveidots DESC
             LIMIT 5
         ");
         $stmt->execute();
         $latest_tasks = $stmt->fetchAll();
+        
+        // Jaunākie regulārie uzdevumi
+        $stmt = $pdo->prepare("
+            SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums,
+                   CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards,
+                   r.periodicitate
+            FROM uzdevumi u
+            LEFT JOIN vietas v ON u.vietas_id = v.id
+            LEFT JOIN iekartas i ON u.iekartas_id = i.id
+            LEFT JOIN lietotaji l ON u.piešķirts_id = l.id
+            LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
+            WHERE u.veids = 'Regulārais'
+            ORDER BY u.izveidots DESC
+            LIMIT 5
+        ");
+        $stmt->execute();
+        $latest_regular_tasks = $stmt->fetchAll();
         
         // Jaunākās problēmas
         $stmt = $pdo->prepare("
@@ -73,25 +110,35 @@ try {
     } elseif (hasRole(ROLE_MECHANIC)) {
         // Mehāniķa statistika
         
-        // Mani uzdevumi
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ?");
+        // Mani ikdienas uzdevumi
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ? AND veids = 'Ikdienas'");
         $stmt->execute([$currentUser['id']]);
         $stats['my_total_tasks'] = $stmt->fetchColumn();
         
-        // Mani aktīvie uzdevumi
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ? AND statuss IN ('Jauns', 'Procesā')");
+        // Mani aktīvie ikdienas uzdevumi
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ? AND veids = 'Ikdienas' AND statuss IN ('Jauns', 'Procesā')");
         $stmt->execute([$currentUser['id']]);
         $stats['my_active_tasks'] = $stmt->fetchColumn();
         
-        // Mani pabeigto uzdevumi šomēnes
+        // Mani pabeigto ikdienas uzdevumi šomēnes
         $stmt = $pdo->prepare("
             SELECT COUNT(*) FROM uzdevumi 
-            WHERE piešķirts_id = ? AND statuss = 'Pabeigts' 
+            WHERE piešķirts_id = ? AND veids = 'Ikdienas' AND statuss = 'Pabeigts' 
             AND MONTH(beigu_laiks) = MONTH(NOW()) 
             AND YEAR(beigu_laiks) = YEAR(NOW())
         ");
         $stmt->execute([$currentUser['id']]);
         $stats['my_completed_this_month'] = $stmt->fetchColumn();
+        
+        // Mani regulārie uzdevumi
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ? AND veids = 'Regulārais'");
+        $stmt->execute([$currentUser['id']]);
+        $stats['my_total_regular_tasks'] = $stmt->fetchColumn();
+        
+        // Mani aktīvie regulārie uzdevumi
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE piešķirts_id = ? AND veids = 'Regulārais' AND statuss IN ('Jauns', 'Procesā')");
+        $stmt->execute([$currentUser['id']]);
+        $stats['my_active_regular_tasks'] = $stmt->fetchColumn();
         
         // Nokavētie uzdevumi
         $stmt = $pdo->prepare("
@@ -102,18 +149,33 @@ try {
         $stmt->execute([$currentUser['id']]);
         $stats['my_overdue_tasks'] = $stmt->fetchColumn();
         
-        // Mani jaunākie uzdevumi
+        // Mani jaunākie ikdienas uzdevumi
         $stmt = $pdo->prepare("
             SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums
             FROM uzdevumi u
             LEFT JOIN vietas v ON u.vietas_id = v.id
             LEFT JOIN iekartas i ON u.iekartas_id = i.id
-            WHERE u.piešķirts_id = ?
+            WHERE u.piešķirts_id = ? AND u.veids = 'Ikdienas'
             ORDER BY u.izveidots DESC
             LIMIT 5
         ");
         $stmt->execute([$currentUser['id']]);
         $my_latest_tasks = $stmt->fetchAll();
+        
+        // Mani jaunākie regulārie uzdevumi
+        $stmt = $pdo->prepare("
+            SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums,
+                   r.periodicitate
+            FROM uzdevumi u
+            LEFT JOIN vietas v ON u.vietas_id = v.id
+            LEFT JOIN iekartas i ON u.iekartas_id = i.id
+            LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
+            WHERE u.piešķirts_id = ? AND u.veids = 'Regulārais'
+            ORDER BY u.izveidots DESC
+            LIMIT 5
+        ");
+        $stmt->execute([$currentUser['id']]);
+        $my_latest_regular_tasks = $stmt->fetchAll();
         
     } elseif (hasRole(ROLE_OPERATOR)) {
         // Operatora statistika
@@ -169,7 +231,7 @@ include 'includes/header.php';
     <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
         <div class="stat-card">
             <div class="stat-number"><?php echo $stats['total_tasks'] ?? 0; ?></div>
-            <div class="stat-label">Kopā uzdevumi</div>
+            <div class="stat-label">Ikdienas uzdevumi</div>
         </div>
         
         <div class="stat-card">
@@ -197,20 +259,40 @@ include 'includes/header.php';
             <div class="stat-label">Aktīvie mehāniķi</div>
         </div>
         
+        <div class="stat-card" style="border-left-color: var(--info-color);">
+            <div class="stat-number" style="color: var(--info-color);"><?php echo $stats['active_regular_templates'] ?? 0; ?></div>
+            <div class="stat-label">Aktīvie regulārie šabloni</div>
+        </div>
+        
+        <div class="stat-card" style="border-left-color: var(--primary-color);">
+            <div class="stat-number" style="color: var(--primary-color);"><?php echo $stats['todays_regular_tasks'] ?? 0; ?></div>
+            <div class="stat-label">Šodienas regulārie uzdevumi</div>
+        </div>
+        
     <?php elseif (hasRole(ROLE_MECHANIC)): ?>
         <div class="stat-card">
             <div class="stat-number"><?php echo $stats['my_total_tasks'] ?? 0; ?></div>
-            <div class="stat-label">Kopā mani uzdevumi</div>
+            <div class="stat-label">Mani ikdienas uzdevumi</div>
         </div>
         
         <div class="stat-card" style="border-left-color: var(--warning-color);">
             <div class="stat-number" style="color: var(--warning-color);"><?php echo $stats['my_active_tasks'] ?? 0; ?></div>
-            <div class="stat-label">Aktīvie uzdevumi</div>
+            <div class="stat-label">Aktīvie ikdienas</div>
         </div>
         
         <div class="stat-card" style="border-left-color: var(--success-color);">
             <div class="stat-number" style="color: var(--success-color);"><?php echo $stats['my_completed_this_month'] ?? 0; ?></div>
             <div class="stat-label">Pabeigti šomēnes</div>
+        </div>
+        
+        <div class="stat-card" style="border-left-color: var(--info-color);">
+            <div class="stat-number" style="color: var(--info-color);"><?php echo $stats['my_total_regular_tasks'] ?? 0; ?></div>
+            <div class="stat-label">Mani regulārie uzdevumi</div>
+        </div>
+        
+        <div class="stat-card" style="border-left-color: var(--primary-color);">
+            <div class="stat-number" style="color: var(--primary-color);"><?php echo $stats['my_active_regular_tasks'] ?? 0; ?></div>
+            <div class="stat-label">Aktīvie regulārie</div>
         </div>
         
         <div class="stat-card" style="border-left-color: var(--danger-color);">
@@ -251,13 +333,15 @@ include 'includes/header.php';
             <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
                 <a href="create_task.php" class="btn btn-primary">Izveidot uzdevumu</a>
                 <a href="tasks.php" class="btn btn-secondary">Skatīt visus uzdevumus</a>
+                <a href="regular_tasks.php" class="btn btn-info">Regulārie uzdevumi</a>
                 <a href="problems.php" class="btn btn-warning">Skatīt problēmas</a>
                 <?php if (hasRole(ROLE_ADMIN)): ?>
-                    <a href="reports.php" class="btn btn-info">Atskaites</a>
-                    <a href="users.php" class="btn btn-success">Pārvaldīt lietotājus</a>
+                    <a href="reports.php" class="btn btn-success">Atskaites</a>
+                    <a href="users.php" class="btn btn-outline-primary">Pārvaldīt lietotājus</a>
                 <?php endif; ?>
             <?php elseif (hasRole(ROLE_MECHANIC)): ?>
-                <a href="my_tasks.php" class="btn btn-primary">Mani uzdevumi</a>
+                <a href="my_tasks.php" class="btn btn-primary">Mani ikdienas uzdevumi</a>
+                <a href="regular_tasks_mechanic.php" class="btn btn-info">Regulārie uzdevumi</a>
                 <a href="completed_tasks.php" class="btn btn-success">Pabeigto uzdevumu vēsture</a>
             <?php elseif (hasRole(ROLE_OPERATOR)): ?>
                 <a href="report_problem.php" class="btn btn-danger">Ziņot problēmu</a>
@@ -269,161 +353,269 @@ include 'includes/header.php';
 
 <!-- Jaunākie ieraksti -->
 <div class="row">
-    <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER]) && !empty($latest_tasks)): ?>
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header">
-                    <h3>Jaunākie uzdevumi</h3>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Nosaukums</th>
-                                    <th>Mehāniķis</th>
-                                    <th>Prioritāte</th>
-                                    <th>Statuss</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($latest_tasks as $task): ?>
+    <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
+        <!-- Jaunākie ikdienas uzdevumi -->
+        <?php if (!empty($latest_tasks)): ?>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Jaunākie ikdienas uzdevumi</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
                                     <tr>
-                                        <td>
-                                            <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong><br>
-                                            <small class="text-muted"><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></small>
-                                        </td>
-                                        <td><?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?></td>
-                                        <td>
-                                            <span class="priority-badge <?php echo getPriorityClass($task['prioritate']); ?>">
-                                                <?php echo $task['prioritate']; ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
-                                                <?php echo $task['statuss']; ?>
-                                            </span>
-                                        </td>
+                                        <th>Nosaukums</th>
+                                        <th>Mehāniķis</th>
+                                        <th>Prioritāte</th>
+                                        <th>Statuss</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($latest_tasks as $task): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong><br>
+                                                <small class="text-muted"><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></small>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?></td>
+                                            <td>
+                                                <span class="priority-badge <?php echo getPriorityClass($task['prioritate']); ?>">
+                                                    <?php echo $task['prioritate']; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
+                                                    <?php echo $task['statuss']; ?>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="tasks.php" class="btn btn-sm btn-primary">Skatīt visus uzdevumus</a>
                     </div>
                 </div>
-                <div class="card-footer">
-                    <a href="tasks.php" class="btn btn-sm btn-primary">Skatīt visus uzdevumus</a>
+            </div>
+        <?php endif; ?>
+        
+        <!-- Jaunākie regulārie uzdevumi -->
+        <?php if (!empty($latest_regular_tasks)): ?>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Jaunākie regulārie uzdevumi</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Nosaukums</th>
+                                        <th>Mehāniķis</th>
+                                        <th>Periodicitāte</th>
+                                        <th>Statuss</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($latest_regular_tasks as $task): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong><br>
+                                                <small class="text-muted"><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></small>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?></td>
+                                            <td>
+                                                <small class="text-muted"><?php echo $task['periodicitate']; ?></small>
+                                            </td>
+                                            <td>
+                                                <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
+                                                    <?php echo $task['statuss']; ?>
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="regular_tasks.php" class="btn btn-sm btn-info">Skatīt regulāros uzdevumus</a>
+                    </div>
                 </div>
             </div>
-        </div>
+        <?php endif; ?>
+        
+        <!-- Jaunākās problēmas -->
+        <?php if (!empty($latest_problems)): ?>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Jaunākās problēmas</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Nosaukums</th>
+                                        <th>Ziņotājs</th>
+                                        <th>Prioritāte</th>
+                                        <th>Izveidots</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($latest_problems as $problem): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($problem['nosaukums']); ?></strong><br>
+                                                <small class="text-muted"><?php echo htmlspecialchars($problem['vietas_nosaukums'] ?? ''); ?></small>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($problem['zinotaja_vards']); ?></td>
+                                            <td>
+                                                <span class="priority-badge <?php echo getPriorityClass($problem['prioritate']); ?>">
+                                                    <?php echo $problem['prioritate']; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <small><?php echo formatDate($problem['izveidots']); ?></small>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="problems.php" class="btn btn-sm btn-warning">Skatīt visas problēmas</a>
+                    </div>
+                </div>
+            </div>
+        <?php endif; ?>
     <?php endif; ?>
     
-    <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER]) && !empty($latest_problems)): ?>
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header">
-                    <h3>Jaunākās problēmas</h3>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Nosaukums</th>
-                                    <th>Ziņotājs</th>
-                                    <th>Prioritāte</th>
-                                    <th>Izveidots</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($latest_problems as $problem): ?>
+    <?php if (hasRole(ROLE_MECHANIC)): ?>
+        <!-- Mehāniķa ikdienas uzdevumi -->
+        <?php if (!empty($my_latest_tasks)): ?>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Mani jaunākie ikdienas uzdevumi</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
                                     <tr>
-                                        <td>
-                                            <strong><?php echo htmlspecialchars($problem['nosaukums']); ?></strong><br>
-                                            <small class="text-muted"><?php echo htmlspecialchars($problem['vietas_nosaukums'] ?? ''); ?></small>
-                                        </td>
-                                        <td><?php echo htmlspecialchars($problem['zinotaja_vards']); ?></td>
-                                        <td>
-                                            <span class="priority-badge <?php echo getPriorityClass($problem['prioritate']); ?>">
-                                                <?php echo $problem['prioritate']; ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <small><?php echo formatDate($problem['izveidots']); ?></small>
-                                        </td>
+                                        <th>Nosaukums</th>
+                                        <th>Vieta</th>
+                                        <th>Prioritāte</th>
+                                        <th>Statuss</th>
+                                        <th>Termiņš</th>
+                                        <th>Darbības</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($my_latest_tasks as $task): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></td>
+                                            <td>
+                                                <span class="priority-badge <?php echo getPriorityClass($task['prioritate']); ?>">
+                                                    <?php echo $task['prioritate']; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
+                                                    <?php echo $task['statuss']; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?php if ($task['jabeidz_lidz']): ?>
+                                                    <small class="<?php echo strtotime($task['jabeidz_lidz']) < time() && $task['statuss'] != 'Pabeigts' ? 'text-danger' : ''; ?>">
+                                                        <?php echo formatDate($task['jabeidz_lidz']); ?>
+                                                    </small>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <?php if ($task['statuss'] == 'Jauns'): ?>
+                                                    <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Procesā')" class="btn btn-sm btn-warning">Sākt</button>
+                                                <?php elseif ($task['statuss'] == 'Procesā'): ?>
+                                                    <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Pabeigts')" class="btn btn-sm btn-success">Pabeigt</button>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="my_tasks.php" class="btn btn-sm btn-primary">Skatīt visus ikdienas uzdevumus</a>
                     </div>
                 </div>
-                <div class="card-footer">
-                    <a href="problems.php" class="btn btn-sm btn-warning">Skatīt visas problēmas</a>
-                </div>
             </div>
-        </div>
-    <?php endif; ?>
-    
-    <?php if (hasRole(ROLE_MECHANIC) && !empty($my_latest_tasks)): ?>
-        <div class="col-md-12">
-            <div class="card">
-                <div class="card-header">
-                    <h3>Mani jaunākie uzdevumi</h3>
-                </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>Nosaukums</th>
-                                    <th>Vieta</th>
-                                    <th>Prioritāte</th>
-                                    <th>Statuss</th>
-                                    <th>Termiņš</th>
-                                    <th>Darbības</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($my_latest_tasks as $task): ?>
+        <?php endif; ?>
+        
+        <!-- Mehāniķa regulārie uzdevumi -->
+        <?php if (!empty($my_latest_regular_tasks)): ?>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Mani jaunākie regulārie uzdevumi</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
                                     <tr>
-                                        <td>
-                                            <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong>
-                                        </td>
-                                        <td><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></td>
-                                        <td>
-                                            <span class="priority-badge <?php echo getPriorityClass($task['prioritate']); ?>">
-                                                <?php echo $task['prioritate']; ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
-                                                <?php echo $task['statuss']; ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <?php if ($task['jabeidz_lidz']): ?>
-                                                <small class="<?php echo strtotime($task['jabeidz_lidz']) < time() && $task['statuss'] != 'Pabeigts' ? 'text-danger' : ''; ?>">
-                                                    <?php echo formatDate($task['jabeidz_lidz']); ?>
-                                                </small>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php if ($task['statuss'] == 'Jauns'): ?>
-                                                <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Procesā')" class="btn btn-sm btn-warning">Sākt</button>
-                                            <?php elseif ($task['statuss'] == 'Procesā'): ?>
-                                                <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Pabeigts')" class="btn btn-sm btn-success">Pabeigt</button>
-                                            <?php endif; ?>
-                                        </td>
+                                        <th>Nosaukums</th>
+                                        <th>Vieta</th>
+                                        <th>Periodicitāte</th>
+                                        <th>Statuss</th>
+                                        <th>Darbības</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($my_latest_regular_tasks as $task): ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></td>
+                                            <td>
+                                                <small class="text-muted"><?php echo $task['periodicitate']; ?></small>
+                                            </td>
+                                            <td>
+                                                <span class="status-badge <?php echo getStatusClass($task['statuss']); ?>">
+                                                    <?php echo $task['statuss']; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?php if ($task['statuss'] == 'Jauns'): ?>
+                                                    <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Procesā')" class="btn btn-sm btn-warning">Sākt</button>
+                                                <?php elseif ($task['statuss'] == 'Procesā'): ?>
+                                                    <button onclick="changeTaskStatus(<?php echo $task['id']; ?>, 'Pabeigts')" class="btn btn-sm btn-success">Pabeigt</button>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <a href="regular_tasks_mechanic.php" class="btn btn-sm btn-info">Skatīt visus regulāros uzdevumus</a>
                     </div>
                 </div>
-                <div class="card-footer">
-                    <a href="my_tasks.php" class="btn btn-sm btn-primary">Skatīt visus manus uzdevumus</a>
-                </div>
             </div>
-        </div>
+        <?php endif; ?>
     <?php endif; ?>
     
     <?php if (hasRole(ROLE_OPERATOR) && !empty($my_latest_problems)): ?>

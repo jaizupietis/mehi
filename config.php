@@ -15,7 +15,7 @@ define('DB_CHARSET', 'utf8mb4');
 
 // Sistēmas konfigurācija
 define('SITE_URL', 'http://192.168.2.11/mehi');
-define('SITE_NAME', 'AVOTI Task Management');
+define('SITE_NAME', 'Uzdevumu pārvaldības sistēma');
 define('COMPANY_NAME', 'SIA "AVOTI"');
 
 // Failu augšupielādes konfigurācija

@@ -1,0 +1,1 @@
+echo "<?php phpinfo(); ?>" > /var/www/mehi/info.php

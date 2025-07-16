@@ -1,9 +1,9 @@
 <?php
-// 500.php - Servera kļūda
-http_response_code(500);
+// 403.php - Piekļuve liegta
+http_response_code(403);
 
-$pageTitle = '500 - Servera kļūda';
-$pageHeader = 'Servera kļūda';
+$pageTitle = '403 - Piekļuve liegta';
+$pageHeader = 'Piekļuve liegta';
 
 // Pārbaudīt vai lietotājs ir pieslēdzies
 if (file_exists('config.php')) {
@@ -14,10 +14,10 @@ if (file_exists('config.php')) {
         ?>
         <div class="error-page">
             <div class="error-content">
-                <h1 class="error-code">500</h1>
-                <h2 class="error-message">Servera kļūda</h2>
+                <h1 class="error-code">403</h1>
+                <h2 class="error-message">Piekļuve liegta</h2>
                 <p class="error-description">
-                    Atvainojamies, bet radusies servera kļūda. Mēģiniet vēlreiz pēc brīža.
+                    Jums nav atļaujas skatīt šo lapu. Lūdzu, sazinieties ar administratoru.
                 </p>
                 <div class="error-actions">
                     <a href="index.php" class="btn btn-primary">Atgriezties sākumā</a>
@@ -28,10 +28,10 @@ if (file_exists('config.php')) {
         <?php
         include 'includes/footer.php';
     } else {
-        showSimpleErrorPage('500', 'Servera kļūda', 'Radusies servera kļūda. Mēģiniet vēlreiz pēc brīža.');
+        showSimpleErrorPage('403', 'Piekļuve liegta', 'Jums nav atļaujas skatīt šo lapu.');
     }
 } else {
-    showSimpleErrorPage('500', 'Servera kļūda', 'Radusies servera kļūda. Mēģiniet vēlreiz pēc brīža.');
+    showSimpleErrorPage('403', 'Piekļuve liegta', 'Jums nav atļaujas skatīt šo lapu.');
 }
 
 function showSimpleErrorPage($code, $title, $description) {
@@ -46,7 +46,7 @@ function showSimpleErrorPage($code, $title, $description) {
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+                background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
                 min-height: 100vh;
                 display: flex;
                 align-items: center;
@@ -65,7 +65,7 @@ function showSimpleErrorPage($code, $title, $description) {
             .error-code {
                 font-size: 6rem;
                 font-weight: bold;
-                color: #e74c3c;
+                color: #f39c12;
                 margin-bottom: 1rem;
             }
             .error-title {

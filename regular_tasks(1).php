@@ -80,8 +80,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 
                 setFlashMessage('success', 'Regulārais uzdevums veiksmīgi izveidots!');
-                redirect('regular_tasks.php');
-                
             } catch (PDOException $e) {
                 $errors[] = "Kļūda izveidojot regulāro uzdevumu: " . $e->getMessage();
             }
@@ -166,7 +164,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("
                         INSERT INTO uzdevumu_vesture 
                         (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
-                        VALUES (?, NULL, 'Jauns', 'Regulārais uzdevums izveidots manuāli', ?)
+                        VALUES (?, NULL, 'Jauns', 'Regulārais uzdevums izveidots automātiski', ?)
                     ");
                     $stmt->execute([$task_id, $currentUser['id']]);
                     
@@ -189,75 +187,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } catch (PDOException $e) {
             $errors[] = "Kļūda izveidojot uzdevumu: " . $e->getMessage();
-        }
-    }
-    
-    if ($action === 'edit_template' && isset($_POST['template_id'])) {
-        $template_id = intval($_POST['template_id']);
-        $nosaukums = sanitizeInput($_POST['nosaukums'] ?? '');
-        $apraksts = sanitizeInput($_POST['apraksts'] ?? '');
-        $vietas_id = intval($_POST['vietas_id'] ?? 0);
-        $iekartas_id = intval($_POST['iekartas_id'] ?? 0);
-        $kategorijas_id = intval($_POST['kategorijas_id'] ?? 0);
-        $prioritate = sanitizeInput($_POST['prioritate'] ?? 'Vidēja');
-        $paredzamais_ilgums = floatval($_POST['paredzamais_ilgums'] ?? 0);
-        $periodicitate = sanitizeInput($_POST['periodicitate'] ?? '');
-        $periodicitas_dienas = $_POST['periodicitas_dienas'] ?? [];
-        $laiks = $_POST['laiks'] ?? '09:00';
-        $aktīvs = isset($_POST['aktīvs']) ? 1 : 0;
-        
-        // Validācija
-        if (empty($nosaukums) || empty($apraksts) || empty($periodicitate)) {
-            $errors[] = "Nosaukums, apraksts un periodicitāte ir obligāti.";
-        }
-        
-        // Validēt periodicitātes dienas
-        $json_dienas = null;
-        if ($periodicitate === 'Katru nedēļu' && !empty($periodicitas_dienas)) {
-            $valid_days = array_filter($periodicitas_dienas, function($day) {
-                return is_numeric($day) && $day >= 1 && $day <= 7;
-            });
-            if (!empty($valid_days)) {
-                $json_dienas = json_encode(array_values($valid_days));
-            }
-        } elseif ($periodicitate === 'Reizi mēnesī' && !empty($periodicitas_dienas)) {
-            $valid_days = array_filter($periodicitas_dienas, function($day) {
-                return is_numeric($day) && $day >= 1 && $day <= 31;
-            });
-            if (!empty($valid_days)) {
-                $json_dienas = json_encode(array_values($valid_days));
-            }
-        }
-        
-        if (empty($errors)) {
-            try {
-                $stmt = $pdo->prepare("
-                    UPDATE regularo_uzdevumu_sabloni 
-                    SET nosaukums = ?, apraksts = ?, vietas_id = ?, iekartas_id = ?, 
-                        kategorijas_id = ?, prioritate = ?, paredzamais_ilgums = ?, 
-                        periodicitate = ?, periodicitas_dienas = ?, laiks = ?, aktīvs = ?
-                    WHERE id = ?
-                ");
-                
-                $stmt->execute([
-                    $nosaukums,
-                    $apraksts,
-                    $vietas_id ?: null,
-                    $iekartas_id ?: null,
-                    $kategorijas_id ?: null,
-                    $prioritate,
-                    $paredzamais_ilgums ?: null,
-                    $periodicitate,
-                    $json_dienas,
-                    $laiks,
-                    $aktīvs,
-                    $template_id
-                ]);
-                
-                setFlashMessage('success', 'Regulārais uzdevums atjaunots!');
-            } catch (PDOException $e) {
-                $errors[] = "Kļūda atjaunojot regulāro uzdevumu: " . $e->getMessage();
-            }
         }
     }
 }
@@ -312,14 +241,13 @@ try {
                k.nosaukums as kategorijas_nosaukums,
                CONCAT(l.vards, ' ', l.uzvards) as izveidoja_vards,
                (SELECT COUNT(*) FROM uzdevumi WHERE regulara_uzdevuma_id = r.id) as izveidoto_uzdevumu_skaits,
-               (SELECT COUNT(*) FROM uzdevumi WHERE regulara_uzdevuma_id = r.id AND statuss = 'Pabeigts') as pabeigto_uzdevumu_skaits,
                (SELECT MAX(izveidots) FROM uzdevumi WHERE regulara_uzdevuma_id = r.id) as pēdējais_izveidots
         FROM regularo_uzdevumu_sabloni r
         LEFT JOIN vietas v ON r.vietas_id = v.id
         LEFT JOIN iekartas i ON r.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON r.kategorijas_id = k.id
         LEFT JOIN lietotaji l ON r.izveidoja_id = l.id
-        ORDER BY r.aktīvs DESC, r.prioritate DESC, r.izveidots DESC
+        ORDER BY r.aktīvs DESC, r.izveidots DESC
     ");
     $regular_tasks = $stmt->fetchAll();
     
@@ -386,10 +314,10 @@ include 'includes/header.php';
                                                 <?php 
                                                 $dienas = json_decode($task['periodicitas_dienas'], true);
                                                 if ($task['periodicitate'] === 'Katru nedēļu' && $dienas) {
-                                                    $nedēļas_dienas = ['', 'P', 'O', 'T', 'C', 'Pk', 'S', 'Sv'];
+                                                    $nedēļas_dienas = ['', 'Pirmdiena', 'Otrdiena', 'Trešdiena', 'Ceturtdiena', 'Piektdiena', 'Sestdiena', 'Svētdiena'];
                                                     echo implode(', ', array_map(function($d) use ($nedēļas_dienas) { return $nedēļas_dienas[$d] ?? $d; }, $dienas));
                                                 } elseif ($task['periodicitate'] === 'Reizi mēnesī' && $dienas) {
-                                                    echo implode(', ', array_map(function($d) { return $d . '.'; }, $dienas));
+                                                    echo implode(', ', array_map(function($d) { return $d . '.'; }, $dienas)) . ' datums';
                                                 }
                                                 ?>
                                             </small>
@@ -426,10 +354,6 @@ include 'includes/header.php';
                                 <td>
                                     <div>
                                         <small>Izveidoti: <?php echo $task['izveidoto_uzdevumu_skaits']; ?></small>
-                                        <br><small>Pabeigti: <?php echo $task['pabeigto_uzdevumu_skaits']; ?></small>
-                                        <?php if ($task['izveidoto_uzdevumu_skaits'] > 0): ?>
-                                            <br><small>Efektivitāte: <?php echo number_format(($task['pabeigto_uzdevumu_skaits'] / $task['izveidoto_uzdevumu_skaits']) * 100, 1); ?>%</small>
-                                        <?php endif; ?>
                                         <?php if ($task['pēdējais_izveidots']): ?>
                                             <br><small class="text-muted">Pēdējoreiz: <?php echo formatDate($task['pēdējais_izveidots']); ?></small>
                                         <?php endif; ?>
@@ -440,16 +364,13 @@ include 'includes/header.php';
                                         <button onclick="viewTemplate(<?php echo htmlspecialchars(json_encode($task)); ?>)" 
                                                 class="btn btn-sm btn-info" title="Skatīt detaļas">👁</button>
                                         
-                                        <button onclick="editTemplate(<?php echo htmlspecialchars(json_encode($task)); ?>)" 
-                                                class="btn btn-sm btn-warning" title="Rediģēt">✏</button>
-                                        
                                         <?php if ($task['aktīvs']): ?>
                                             <button onclick="executeNow(<?php echo $task['id']; ?>)" 
                                                     class="btn btn-sm btn-success" title="Izveidot uzdevumu tagad">▶</button>
                                         <?php endif; ?>
                                         
                                         <button onclick="toggleTemplate(<?php echo $task['id']; ?>, <?php echo $task['aktīvs'] ? 'false' : 'true'; ?>)" 
-                                                class="btn btn-sm btn-secondary" title="<?php echo $task['aktīvs'] ? 'Deaktivizēt' : 'Aktivizēt'; ?>">
+                                                class="btn btn-sm btn-warning" title="<?php echo $task['aktīvs'] ? 'Deaktivizēt' : 'Aktivizēt'; ?>">
                                             <?php echo $task['aktīvs'] ? '⏸' : '▶'; ?>
                                         </button>
                                         
@@ -608,151 +529,6 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- Šablona rediģēšanas modāls -->
-<div id="editTemplateModal" class="modal">
-    <div class="modal-content" style="max-width: 800px;">
-        <div class="modal-header">
-            <h3 class="modal-title">Rediģēt regulāro uzdevumu</h3>
-            <button onclick="closeModal('editTemplateModal')" class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-            <form id="editTemplateForm" method="POST">
-                <input type="hidden" name="action" value="edit_template">
-                <input type="hidden" name="template_id" id="edit_template_id">
-                
-                <div class="row">
-                    <div class="col-md-8">
-                        <div class="form-group">
-                            <label for="edit_nosaukums" class="form-label">Uzdevuma nosaukums *</label>
-                            <input type="text" id="edit_nosaukums" name="nosaukums" class="form-control" required>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_prioritate" class="form-label">Prioritāte *</label>
-                            <select id="edit_prioritate" name="prioritate" class="form-control" required>
-                                <option value="Zema">Zema</option>
-                                <option value="Vidēja">Vidēja</option>
-                                <option value="Augsta">Augsta</option>
-                                <option value="Kritiska">Kritiska</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label for="edit_apraksts" class="form-label">Uzdevuma apraksts *</label>
-                    <textarea id="edit_apraksts" name="apraksts" class="form-control" rows="4" required></textarea>
-                </div>
-                
-                <div class="row">
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_vietas_id" class="form-label">Vieta</label>
-                            <select id="edit_vietas_id" name="vietas_id" class="form-control" onchange="updateEditIekartas()">
-                                <option value="">Izvēlieties vietu</option>
-                                <?php foreach ($vietas as $vieta): ?>
-                                    <option value="<?php echo $vieta['id']; ?>">
-                                        <?php echo htmlspecialchars($vieta['nosaukums']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_iekartas_id" class="form-label">Iekārta</label>
-                            <select id="edit_iekartas_id" name="iekartas_id" class="form-control">
-                                <option value="">Izvēlieties iekārtu</option>
-                                <?php foreach ($iekartas as $iekarta): ?>
-                                    <option value="<?php echo $iekarta['id']; ?>" data-vieta="<?php echo $iekarta['vietas_id']; ?>">
-                                        <?php echo htmlspecialchars($iekarta['nosaukums']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_kategorijas_id" class="form-label">Kategorija</label>
-                            <select id="edit_kategorijas_id" name="kategorijas_id" class="form-control">
-                                <option value="">Izvēlieties kategoriju</option>
-                                <?php foreach ($kategorijas as $kategorija): ?>
-                                    <option value="<?php echo $kategorija['id']; ?>">
-                                        <?php echo htmlspecialchars($kategorija['nosaukums']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row">
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_paredzamais_ilgums" class="form-label">Paredzamais ilgums (h)</label>
-                            <input type="number" id="edit_paredzamais_ilgums" name="paredzamais_ilgums" class="form-control" step="0.5" min="0">
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_periodicitate" class="form-label">Periodicitāte *</label>
-                            <select id="edit_periodicitate" name="periodicitate" class="form-control" required onchange="updateEditPeriodicityOptions()">
-                                <option value="">Izvēlieties periodicitāti</option>
-                                <option value="Katru dienu">Katru dienu</option>
-                                <option value="Katru nedēļu">Katru nedēļu</option>
-                                <option value="Reizi mēnesī">Reizi mēnesī</option>
-                                <option value="Reizi ceturksnī">Reizi ceturksnī</option>
-                                <option value="Reizi gadā">Reizi gadā</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="edit_laiks" class="form-label">Izveidošanas laiks</label>
-                            <input type="time" id="edit_laiks" name="laiks" class="form-control">
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Nedēļas dienu izvēle -->
-                <div id="editWeekDaysSection" class="form-group" style="display: none;">
-                    <label class="form-label">Nedēļas dienas</label>
-                    <div class="checkbox-group">
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="1"> Pirmdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="2"> Otrdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="3"> Trešdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="4"> Ceturtdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="5"> Piektdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="6"> Sestdiena</label>
-                        <label><input type="checkbox" name="periodicitas_dienas[]" value="7"> Svētdiena</label>
-                    </div>
-                </div>
-                
-                <!-- Mēneša dienu izvēle -->
-                <div id="editMonthDaysSection" class="form-group" style="display: none;">
-                    <label class="form-label">Mēneša dienas</label>
-                    <div class="checkbox-group">
-                        <?php for ($i = 1; $i <= 31; $i++): ?>
-                            <label><input type="checkbox" name="periodicitas_dienas[]" value="<?php echo $i; ?>"> <?php echo $i; ?>.</label>
-                        <?php endfor; ?>
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label class="form-label">
-                        <input type="checkbox" id="edit_aktīvs" name="aktīvs"> Aktīvs
-                    </label>
-                </div>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button onclick="closeModal('editTemplateModal')" class="btn btn-secondary">Atcelt</button>
-            <button onclick="document.getElementById('editTemplateForm').submit()" class="btn btn-primary">Saglabāt</button>
-        </div>
-    </div>
-</div>
-
 <!-- Šablona skatīšanas modāls -->
 <div id="viewTemplateModal" class="modal">
     <div class="modal-content">
@@ -799,62 +575,11 @@ function updateIekartas() {
     }
 }
 
-// Iekartu filtrēšana rediģēšanas modālā
-function updateEditIekartas() {
-    const vietasSelect = document.getElementById('edit_vietas_id');
-    const iekartasSelect = document.getElementById('edit_iekartas_id');
-    const selectedVieta = vietasSelect.value;
-    
-    Array.from(iekartasSelect.options).forEach(option => {
-        if (option.value === '') {
-            option.style.display = 'block';
-            return;
-        }
-        
-        const iekartaVieta = option.getAttribute('data-vieta');
-        if (!selectedVieta || iekartaVieta === selectedVieta) {
-            option.style.display = 'block';
-        } else {
-            option.style.display = 'none';
-        }
-    });
-    
-    if (selectedVieta && iekartasSelect.value) {
-        const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
-        const selectedIekartaVieta = selectedOption.getAttribute('data-vieta');
-        if (selectedIekartaVieta !== selectedVieta) {
-            iekartasSelect.value = '';
-        }
-    }
-}
-
 // Periodicitātes opciju atjaunošana
 function updatePeriodicityOptions() {
     const periodicitate = document.getElementById('periodicitate').value;
     const weekDaysSection = document.getElementById('weekDaysSection');
     const monthDaysSection = document.getElementById('monthDaysSection');
-    
-    // Paslēpt visas sekcijas
-    weekDaysSection.style.display = 'none';
-    monthDaysSection.style.display = 'none';
-    
-    // Notīrīt izvēles
-    weekDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-    monthDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-    
-    // Parādīt attiecīgo sekciju
-    if (periodicitate === 'Katru nedēļu') {
-        weekDaysSection.style.display = 'block';
-    } else if (periodicitate === 'Reizi mēnesī') {
-        monthDaysSection.style.display = 'block';
-    }
-}
-
-// Rediģēšanas periodicitātes opciju atjaunošana
-function updateEditPeriodicityOptions() {
-    const periodicitate = document.getElementById('edit_periodicitate').value;
-    const weekDaysSection = document.getElementById('editWeekDaysSection');
-    const monthDaysSection = document.getElementById('editMonthDaysSection');
     
     // Paslēpt visas sekcijas
     weekDaysSection.style.display = 'none';
@@ -924,8 +649,6 @@ function viewTemplate(template) {
             <div class="template-stats">
                 <h5>Statistika</h5>
                 <div><strong>Izveidoti uzdevumi:</strong> ${template.izveidoto_uzdevumu_skaits}</div>
-                <div><strong>Pabeigti uzdevumi:</strong> ${template.pabeigto_uzdevumu_skaits}</div>
-                ${template.izveidoto_uzdevumu_skaits > 0 ? '<div><strong>Efektivitāte:</strong> ' + Math.round((template.pabeigto_uzdevumu_skaits / template.izveidoto_uzdevumu_skaits) * 100) + '%</div>' : ''}
                 ${template.pēdējais_izveidots ? '<div><strong>Pēdējoreiz izveidots:</strong> ' + new Date(template.pēdējais_izveidots).toLocaleString('lv-LV') + '</div>' : ''}
                 <div><strong>Izveidoja:</strong> ${template.izveidoja_vards}</div>
                 <div><strong>Izveidots:</strong> ${new Date(template.izveidots).toLocaleString('lv-LV')}</div>
@@ -934,36 +657,6 @@ function viewTemplate(template) {
     `;
     
     openModal('viewTemplateModal');
-}
-
-// Šablona rediģēšana
-function editTemplate(template) {
-    document.getElementById('edit_template_id').value = template.id;
-    document.getElementById('edit_nosaukums').value = template.nosaukums;
-    document.getElementById('edit_apraksts').value = template.apraksts;
-    document.getElementById('edit_vietas_id').value = template.vietas_id || '';
-    document.getElementById('edit_iekartas_id').value = template.iekartas_id || '';
-    document.getElementById('edit_kategorijas_id').value = template.kategorijas_id || '';
-    document.getElementById('edit_prioritate').value = template.prioritate;
-    document.getElementById('edit_paredzamais_ilgums').value = template.paredzamais_ilgums || '';
-    document.getElementById('edit_periodicitate').value = template.periodicitate;
-    document.getElementById('edit_laiks').value = template.laiks;
-    document.getElementById('edit_aktīvs').checked = template.aktīvs == 1;
-    
-    // Atjaunot periodicitātes opcijas
-    updateEditPeriodicityOptions();
-    
-    // Iestatīt periodicitātes dienas
-    if (template.periodicitas_dienas) {
-        const dienas = JSON.parse(template.periodicitas_dienas);
-        const checkboxes = document.querySelectorAll('#editWeekDaysSection input[type="checkbox"], #editMonthDaysSection input[type="checkbox"]');
-        checkboxes.forEach(cb => {
-            cb.checked = dianas.includes(parseInt(cb.value));
-        });
-    }
-    
-    updateEditIekartas();
-    openModal('editTemplateModal');
 }
 
 // Šablona statusa maiņa
@@ -1087,21 +780,6 @@ function deleteTemplate(templateId) {
 .status-neaktīvs {
     background: var(--gray-500);
     color: var(--white);
-}
-
-.table-muted {
-    opacity: 0.6;
-}
-
-.btn-group {
-    display: flex;
-    gap: 2px;
-}
-
-.btn-group .btn {
-    margin: 0;
-    padding: 4px 8px;
-    min-width: 32px;
 }
 
 .row {
