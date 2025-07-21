@@ -15,7 +15,7 @@ define('DB_CHARSET', 'utf8mb4');
 
 // Sistēmas konfigurācija
 define('SITE_URL', 'http://192.168.2.11/mehi');
-define('SITE_NAME', 'AVOTI Task Management');
+define('SITE_NAME', 'Uzdevumu pārvaldības sistēma');
 define('COMPANY_NAME', 'SIA "AVOTI"');
 
 // Failu augšupielādes konfigurācija
@@ -46,10 +46,6 @@ define('TASK_STATUS_COMPLETED', 'Pabeigts');
 define('TASK_STATUS_CANCELLED', 'Atcelts');
 define('TASK_STATUS_POSTPONED', 'Atlikts');
 
-// Uzdevumu veidi
-define('TASK_TYPE_DAILY', 'Ikdienas');
-define('TASK_TYPE_REGULAR', 'Regulārais');
-
 // Problēmu statusi
 define('PROBLEM_STATUS_NEW', 'Jauna');
 define('PROBLEM_STATUS_REVIEWED', 'Apskatīta');
@@ -61,13 +57,6 @@ define('PRIORITY_LOW', 'Zema');
 define('PRIORITY_MEDIUM', 'Vidēja');
 define('PRIORITY_HIGH', 'Augsta');
 define('PRIORITY_CRITICAL', 'Kritiska');
-
-// Regulāro uzdevumu periodicitātes
-define('PERIOD_DAILY', 'Katru dienu');
-define('PERIOD_WEEKLY', 'Katru nedēļu');
-define('PERIOD_MONTHLY', 'Reizi mēnesī');
-define('PERIOD_QUARTERLY', 'Reizi ceturksnī');
-define('PERIOD_YEARLY', 'Reizi gadā');
 
 // Datubāzes pieslēgšanas klase
 class Database {
@@ -222,203 +211,6 @@ function getUnreadNotificationCount($lietotaja_id) {
     }
 }
 
-// Regulāro uzdevumu funkcijas
-function findLeastBusyMechanic() {
-    global $pdo;
-    
-    try {
-        $stmt = $pdo->query("
-            SELECT l.id, 
-                   COUNT(u.id) as aktīvo_uzdevumu_skaits,
-                   SUM(CASE WHEN u.prioritate = 'Kritiska' THEN 3 
-                            WHEN u.prioritate = 'Augsta' THEN 2 
-                            WHEN u.prioritate = 'Vidēja' THEN 1 
-                            ELSE 0 END) as prioritātes_svars
-            FROM lietotaji l
-            LEFT JOIN uzdevumi u ON l.id = u.piešķirts_id AND u.statuss IN ('Jauns', 'Procesā')
-            WHERE l.loma = 'Mehāniķis' AND l.statuss = 'Aktīvs'
-            GROUP BY l.id
-            ORDER BY aktīvo_uzdevumu_skaits ASC, prioritātes_svars ASC, l.id ASC
-            LIMIT 1
-        ");
-        
-        $result = $stmt->fetch();
-        return $result ? $result['id'] : null;
-    } catch (PDOException $e) {
-        error_log("Kļūda meklējot brīvāko mehāniķi: " . $e->getMessage());
-        return null;
-    }
-}
-
-function shouldCreateRegularTask($periodicitate, $periodicitas_dienas, $laiks = null) {
-    $today = date('N'); // 1 = Pirmdiena, 7 = Svētdiena
-    $today_date = date('j'); // Mēneša diena
-    $current_time = date('H:i');
-    
-    // Ja ir norādīts laiks, pārbaudīt vai ir pareizais laiks
-    if ($laiks && $laiks != $current_time) {
-        return false;
-    }
-    
-    switch ($periodicitate) {
-        case PERIOD_DAILY:
-            return true;
-            
-        case PERIOD_WEEKLY:
-            if ($periodicitas_dienas) {
-                $dienas = json_decode($periodicitas_dienas, true);
-                return is_array($dienas) && in_array($today, $dienas);
-            }
-            return false;
-            
-        case PERIOD_MONTHLY:
-            if ($periodicitas_dienas) {
-                $dienas = json_decode($periodicitas_dienas, true);
-                return is_array($dienas) && in_array($today_date, $dienas);
-            }
-            return false;
-            
-        case PERIOD_QUARTERLY:
-            // Pirmā mēneša diena ceturksnī
-            $month = date('n');
-            $quarter_months = [1, 4, 7, 10];
-            return in_array($month, $quarter_months) && $today_date == 1;
-            
-        case PERIOD_YEARLY:
-            // 1. janvārī
-            return date('m-d') == '01-01';
-            
-        default:
-            return false;
-    }
-}
-
-function isRegularTaskCreatedToday($template_id) {
-    global $pdo;
-    
-    try {
-        $stmt = $pdo->prepare("
-            SELECT COUNT(*) 
-            FROM uzdevumi 
-            WHERE regulara_uzdevuma_id = ? 
-            AND DATE(izveidots) = CURDATE()
-        ");
-        $stmt->execute([$template_id]);
-        
-        return $stmt->fetchColumn() > 0;
-    } catch (PDOException $e) {
-        error_log("Kļūda pārbaudot uzdevuma esamību: " . $e->getMessage());
-        return true; // Drošības dēļ atgriežam true
-    }
-}
-
-function createRegularTask($template, $mechanic_id, $created_by = 1) {
-    global $pdo;
-    
-    try {
-        $pdo->beginTransaction();
-        
-        // Izveidot uzdevumu
-        $stmt = $pdo->prepare("
-            INSERT INTO uzdevumi 
-            (nosaukums, apraksts, veids, vietas_id, iekartas_id, kategorijas_id, 
-             prioritate, piešķirts_id, izveidoja_id, paredzamais_ilgums, regulara_uzdevuma_id)
-            VALUES (?, ?, 'Regulārais', ?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        
-        $stmt->execute([
-            $template['nosaukums'],
-            $template['apraksts'],
-            $template['vietas_id'],
-            $template['iekartas_id'],
-            $template['kategorijas_id'],
-            $template['prioritate'],
-            $mechanic_id,
-            $created_by,
-            $template['paredzamais_ilgums'],
-            $template['id']
-        ]);
-        
-        $task_id = $pdo->lastInsertId();
-        
-        // Pievienot vēsturi
-        $stmt = $pdo->prepare("
-            INSERT INTO uzdevumu_vesture 
-            (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
-            VALUES (?, NULL, 'Jauns', 'Regulārais uzdevums izveidots automātiski', ?)
-        ");
-        $stmt->execute([$task_id, $created_by]);
-        
-        // Paziņot mehāniķim
-        createNotification(
-            $mechanic_id,
-            'Jauns regulārais uzdevums',
-            "Jums ir piešķirts regulārais uzdevums: {$template['nosaukums']}",
-            'Jauns uzdevums',
-            'Uzdevums',
-            $task_id
-        );
-        
-        $pdo->commit();
-        return $task_id;
-        
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        error_log("Kļūda izveidojot regulāro uzdevumu: " . $e->getMessage());
-        return false;
-    }
-}
-
-function getRegularTaskStatistics($user_id = null) {
-    global $pdo;
-    
-    try {
-        $where_clause = $user_id ? "WHERE u.piešķirts_id = ?" : "";
-        $params = $user_id ? [$user_id] : [];
-        
-        $stmt = $pdo->prepare("
-            SELECT 
-                COUNT(*) as kopā_regulārie,
-                SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_regulārie,
-                SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi_regulārie,
-                COUNT(DISTINCT u.regulara_uzdevuma_id) as dažādi_šabloni
-            FROM uzdevumi u
-            $where_clause AND u.veids = 'Regulārais'
-        ");
-        $stmt->execute($params);
-        
-        return $stmt->fetch();
-    } catch (PDOException $e) {
-        error_log("Kļūda iegūstot regulāro uzdevumu statistiku: " . $e->getMessage());
-        return ['kopā_regulārie' => 0, 'pabeigti_regulārie' => 0, 'aktīvi_regulārie' => 0, 'dažādi_šabloni' => 0];
-    }
-}
-
-function getActiveRegularTemplates() {
-    global $pdo;
-    
-    try {
-        $stmt = $pdo->query("
-            SELECT r.*, 
-                   v.nosaukums as vietas_nosaukums,
-                   COUNT(u.id) as uzdevumu_skaits,
-                   SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_skaits,
-                   MAX(u.izveidots) as pēdējais_uzdevums
-            FROM regularo_uzdevumu_sabloni r
-            LEFT JOIN vietas v ON r.vietas_id = v.id
-            LEFT JOIN uzdevumi u ON r.id = u.regulara_uzdevuma_id
-            WHERE r.aktīvs = 1
-            GROUP BY r.id
-            ORDER BY r.prioritate DESC, r.nosaukums
-        ");
-        
-        return $stmt->fetchAll();
-    } catch (PDOException $e) {
-        error_log("Kļūda iegūstot aktīvos regulāros šablonus: " . $e->getMessage());
-        return [];
-    }
-}
-
 // CSRF aizsardzība
 function generateCSRFToken() {
     if (!isset($_SESSION['csrf_token'])) {
@@ -507,21 +299,5 @@ function uploadFile($file, $targetDir = UPLOAD_DIR) {
         'faila_tips' => $mimeType,
         'faila_izmers' => $file['size']
     ];
-}
-
-// Logging funkcija
-function logMessage($message, $logFile = null) {
-    if (!$logFile) {
-        $logFile = __DIR__ . '/logs/system.log';
-    }
-    
-    $logDir = dirname($logFile);
-    
-    if (!is_dir($logDir)) {
-        mkdir($logDir, 0755, true);
-    }
-    
-    $timestamp = date('Y-m-d H:i:s');
-    file_put_contents($logFile, "[$timestamp] $message\n", FILE_APPEND | LOCK_EX);
 }
 ?>
