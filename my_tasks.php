@@ -103,8 +103,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo->beginTransaction();
             
-            // Pārbaudīt vai uzdevums pieder lietotājam
-            $stmt = $pdo->prepare("SELECT statuss FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
+            // Pārbaudīt vai uzdevums pieder lietotājam un iegūt uzdevuma veidu
+            $stmt = $pdo->prepare("SELECT statuss, veids FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
             $stmt->execute([$task_id, $currentUser['id']]);
             $task = $stmt->fetch();
             
@@ -143,6 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 
                 // Pievienot vēsturi
+                $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
                 $stmt = $pdo->prepare("
                     INSERT INTO uzdevumu_vesture 
                     (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
@@ -151,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([
                     $task_id, 
                     $task['statuss'], 
-                    'Uzdevums pabeigts' . ($komentars ? ': ' . $komentars : ''), 
+                    "$uzdevuma_tips pabeigts" . ($komentars ? ': ' . $komentars : ''), 
                     $currentUser['id']
                 ]);
                 
@@ -167,7 +168,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($managers as $manager) {
                     createNotification(
                         $manager['id'],
-                        'Uzdevums pabeigts',
+                        "$uzdevuma_tips pabeigts",
                         "Mehāniķis {$currentUser['vards']} {$currentUser['uzvards']} ir pabeidzis uzdevumu: {$manager['nosaukums']}",
                         'Statusa maiņa',
                         'Uzdevums',
@@ -176,7 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 $pdo->commit();
-                setFlashMessage('success', 'Uzdevums pabeigts!');
+                setFlashMessage('success', "$uzdevuma_tips pabeigts!");
             } else {
                 $errors[] = 'Nevar pabeigt šo uzdevumu.';
             }
@@ -192,7 +193,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $filters = [
     'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
     'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
-    'vieta' => intval($_GET['vieta'] ?? 0)
+    'vieta' => intval($_GET['vieta'] ?? 0),
+    'veids' => sanitizeInput($_GET['veids'] ?? 'Ikdienas'), // Pēc noklusējuma rādīt ikdienas uzdevumus
+    'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
 ];
 
 // Kārtošanas parametri
@@ -217,6 +220,12 @@ try {
     $where_conditions = ["u.piešķirts_id = ?"];
     $params = [$currentUser['id']];
     
+    // Uzdevuma veida filtrs
+    if (!empty($filters['veids'])) {
+        $where_conditions[] = "u.veids = ?";
+        $params[] = $filters['veids'];
+    }
+    
     if (!empty($filters['statuss'])) {
         $where_conditions[] = "u.statuss = ?";
         $params[] = $filters['statuss'];
@@ -230,6 +239,11 @@ try {
     if ($filters['vieta'] > 0) {
         $where_conditions[] = "u.vietas_id = ?";
         $params[] = $filters['vieta'];
+    }
+    
+    // Nokavēto uzdevumu filtrs
+    if ($filters['show_overdue']) {
+        $where_conditions[] = "((u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts')) OR u.statuss IN ('Jauns', 'Procesā'))";
     }
     
     $where_clause = 'WHERE ' . implode(' AND ', $where_conditions);
@@ -252,29 +266,19 @@ try {
                v.nosaukums as vietas_nosaukums,
                i.nosaukums as iekartas_nosaukums,
                k.nosaukums as kategorijas_nosaukums,
+               r.periodicitate,
                (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
-               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
+               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs,
+               CASE 
+                   WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 
+                   ELSE 0 
+               END as ir_nokavets
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
+        LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
         $where_clause
-        $order_clause
-    ";
-
-// Uzdevumu saraksts (tikai ikdienas uzdevumi)
-    $sql = "
-        SELECT u.*, 
-               v.nosaukums as vietas_nosaukums,
-               i.nosaukums as iekartas_nosaukums,
-               k.nosaukums as kategorijas_nosaukums,
-               (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
-               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
-        FROM uzdevumi u
-        LEFT JOIN vietas v ON u.vietas_id = v.id
-        LEFT JOIN iekartas i ON u.iekartas_id = i.id
-        LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
-        $where_clause AND u.veids = 'Ikdienas'
         $order_clause
     ";
     
@@ -283,9 +287,28 @@ try {
     $stmt->execute($params);
     $uzdevumi = $stmt->fetchAll();
     
+    // Statistika pa veidiem
+    $stmt = $pdo->prepare("
+        SELECT 
+            u.veids,
+            COUNT(*) as kopā,
+            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti,
+            SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi,
+            SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēti
+        FROM uzdevumi u
+        WHERE u.piešķirts_id = ?
+        GROUP BY u.veids
+    ");
+    $stmt->execute([$currentUser['id']]);
+    $statistika_pa_veidiem = [];
+    while ($row = $stmt->fetch()) {
+        $statistika_pa_veidiem[$row['veids']] = $row;
+    }
+    
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot uzdevumus: " . $e->getMessage();
     $uzdevumi = [];
+    $statistika_pa_veidiem = [];
 }
 
 include 'includes/header.php';
@@ -297,9 +320,61 @@ include 'includes/header.php';
     <?php endforeach; ?>
 <?php endif; ?>
 
+<!-- Statistikas kartes pa uzdevumu veidiem -->
+<div class="stats-grid mb-4">
+    <div class="stat-card">
+        <div class="stat-number"><?php echo ($statistika_pa_veidiem['Ikdienas']['kopā'] ?? 0); ?></div>
+        <div class="stat-label">Ikdienas uzdevumi</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--info-color);">
+        <div class="stat-number" style="color: var(--info-color);"><?php echo ($statistika_pa_veidiem['Regulārais']['kopā'] ?? 0); ?></div>
+        <div class="stat-label">Regulārie uzdevumi</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--warning-color);">
+        <div class="stat-number" style="color: var(--warning-color);">
+            <?php 
+            $total_active = ($statistika_pa_veidiem['Ikdienas']['aktīvi'] ?? 0) + ($statistika_pa_veidiem['Regulārais']['aktīvi'] ?? 0);
+            echo $total_active;
+            ?>
+        </div>
+        <div class="stat-label">Aktīvie uzdevumi</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--success-color);">
+        <div class="stat-number" style="color: var(--success-color);">
+            <?php 
+            $total_completed = ($statistika_pa_veidiem['Ikdienas']['pabeigti'] ?? 0) + ($statistika_pa_veidiem['Regulārais']['pabeigti'] ?? 0);
+            echo $total_completed;
+            ?>
+        </div>
+        <div class="stat-label">Pabeigti uzdevumi</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--danger-color);">
+        <div class="stat-number" style="color: var(--danger-color);">
+            <?php 
+            $total_overdue = ($statistika_pa_veidiem['Ikdienas']['nokavēti'] ?? 0) + ($statistika_pa_veidiem['Regulārais']['nokavēti'] ?? 0);
+            echo $total_overdue;
+            ?>
+        </div>
+        <div class="stat-label">Nokavētie uzdevumi</div>
+    </div>
+</div>
+
 <!-- Filtru josla -->
 <div class="filter-bar">
     <form method="GET" id="filterForm" class="filter-row">
+        <div class="filter-col">
+            <label for="veids" class="form-label">Uzdevuma veids</label>
+            <select id="veids" name="veids" class="form-control">
+                <option value="">Visi veidi</option>
+                <option value="Ikdienas" <?php echo $filters['veids'] === 'Ikdienas' ? 'selected' : ''; ?>>Ikdienas uzdevumi</option>
+                <option value="Regulārais" <?php echo $filters['veids'] === 'Regulārais' ? 'selected' : ''; ?>>Regulārie uzdevumi</option>
+            </select>
+        </div>
+        
         <div class="filter-col">
             <label for="statuss" class="form-label">Statuss</label>
             <select id="statuss" name="statuss" class="form-control">
@@ -335,6 +410,13 @@ include 'includes/header.php';
             </select>
         </div>
         
+        <div class="filter-col">
+            <label class="form-label">
+                <input type="checkbox" name="show_overdue" value="1" <?php echo $filters['show_overdue'] ? 'checked' : ''; ?>> 
+                Tikai nokavētie/aktīvie
+            </label>
+        </div>
+        
         <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
             <button type="submit" class="btn btn-primary">Filtrēt</button>
             <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
@@ -365,15 +447,23 @@ include 'includes/header.php';
         <div class="card">
             <div class="card-body text-center">
                 <h4>Nav uzdevumu</h4>
-                <p>Jums pašlaik nav piešķirti uzdevumi.</p>
+                <p>Jums pašlaik nav piešķirti uzdevumi atbilstoši izvēlētajiem filtriem.</p>
+                <?php if (!empty($filters['veids']) || !empty($filters['statuss']) || !empty($filters['prioritate']) || $filters['vieta'] > 0): ?>
+                    <p><a href="my_tasks.php" class="btn btn-primary">Skatīt visus uzdevumus</a></p>
+                <?php endif; ?>
             </div>
         </div>
     <?php else: ?>
         <?php foreach ($uzdevumi as $uzdevums): ?>
-            <div class="task-card <?php echo strtolower($uzdevums['prioritate']); ?> <?php echo strtolower(str_replace(' ', '-', $uzdevums['statuss'])); ?>">
+            <div class="task-card <?php echo strtolower($uzdevums['prioritate']); ?> <?php echo strtolower(str_replace(' ', '-', $uzdevums['statuss'])); ?> <?php echo $uzdevums['ir_nokavets'] ? 'overdue' : ''; ?> <?php echo $uzdevums['veids'] === 'Regulārais' ? 'regular-task' : ''; ?>">
                 <div class="task-header">
                     <div class="task-title">
-                        <h4><?php echo htmlspecialchars($uzdevums['nosaukums']); ?></h4>
+                        <h4>
+                            <?php echo htmlspecialchars($uzdevums['nosaukums']); ?>
+                            <?php if ($uzdevums['veids'] === 'Regulārais'): ?>
+                                <span class="task-type-badge">Regulārais</span>
+                            <?php endif; ?>
+                        </h4>
                         <div class="task-badges">
                             <span class="priority-badge <?php echo getPriorityClass($uzdevums['prioritate']); ?>">
                                 <?php echo $uzdevums['prioritate']; ?>
@@ -386,6 +476,12 @@ include 'includes/header.php';
                             <?php endif; ?>
                             <?php if ($uzdevums['aktīvs_darbs'] > 0): ?>
                                 <span class="working-badge" title="Darbs procesā">⏰ Darbs procesā</span>
+                            <?php endif; ?>
+                            <?php if ($uzdevums['ir_nokavets']): ?>
+                                <span class="overdue-badge" title="Nokavēts">⚠️ NOKAVĒTS</span>
+                            <?php endif; ?>
+                            <?php if ($uzdevums['periodicitate']): ?>
+                                <span class="periodicity-badge" title="Periodicitāte"><?php echo $uzdevums['periodicitate']; ?></span>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -404,7 +500,7 @@ include 'includes/header.php';
                         <?php endif; ?>
                         <?php if ($uzdevums['jabeidz_lidz']): ?>
                             <div><strong>Termiņš:</strong> 
-                                <span class="<?php echo strtotime($uzdevums['jabeidz_lidz']) < time() && $uzdevums['statuss'] != 'Pabeigts' ? 'text-danger' : ''; ?>">
+                                <span class="<?php echo $uzdevums['ir_nokavets'] ? 'text-danger' : ''; ?>">
                                     <?php echo formatDate($uzdevums['jabeidz_lidz']); ?>
                                 </span>
                             </div>
@@ -561,7 +657,7 @@ function submitAction(action, taskId) {
 }
 
 // Filtru automātiska iesniegšana
-document.querySelectorAll('#filterForm select').forEach(element => {
+document.querySelectorAll('#filterForm select, #filterForm input[type="checkbox"]').forEach(element => {
     element.addEventListener('change', function() {
         document.getElementById('filterForm').submit();
     });
@@ -591,6 +687,7 @@ document.querySelectorAll('#filterForm select').forEach(element => {
     overflow: hidden;
     transition: all 0.3s ease;
     border-left: 4px solid var(--gray-400);
+    position: relative;
 }
 
 .task-card:hover {
@@ -623,6 +720,28 @@ document.querySelectorAll('#filterForm select').forEach(element => {
     background: linear-gradient(135deg, var(--white) 0%, rgba(39, 174, 96, 0.05) 100%);
 }
 
+.task-card.overdue {
+    background: linear-gradient(135deg, var(--white) 0%, rgba(231, 76, 60, 0.05) 100%);
+    border-left-color: var(--danger-color) !important;
+}
+
+.task-card.regular-task::before {
+    content: 'R';
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 20px;
+    height: 20px;
+    background: var(--info-color);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+}
+
 .task-header {
     padding: var(--spacing-md);
     border-bottom: 1px solid var(--gray-300);
@@ -638,6 +757,33 @@ document.querySelectorAll('#filterForm select').forEach(element => {
     display: flex;
     gap: var(--spacing-xs);
     flex-wrap: wrap;
+}
+
+.task-type-badge {
+    background: var(--info-color);
+    color: var(--white);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: bold;
+    margin-left: 8px;
+}
+
+.overdue-badge {
+    background: var(--danger-color);
+    color: var(--white);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    animation: pulse 1.5s infinite;
+}
+
+.periodicity-badge {
+    background: var(--secondary-color);
+    color: var(--white);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
 }
 
 .task-body {
@@ -700,6 +846,13 @@ document.querySelectorAll('#filterForm select').forEach(element => {
     animation: pulse 1.5s infinite;
 }
 
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-lg);
+}
+
 @media (max-width: 480px) {
     .task-footer {
         flex-direction: column;
@@ -712,6 +865,10 @@ document.querySelectorAll('#filterForm select').forEach(element => {
     
     .task-time {
         text-align: center;
+    }
+    
+    .stats-grid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     }
 }
 </style>

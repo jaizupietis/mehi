@@ -10,13 +10,191 @@ $pageHeader = 'Mani regulārie uzdevumi';
 $currentUser = getCurrentUser();
 $errors = [];
 
+// Apstrādāt POST darbības
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    
+    if ($action === 'start_work' && isset($_POST['task_id'])) {
+        $task_id = intval($_POST['task_id']);
+        
+        try {
+            $pdo->beginTransaction();
+            
+            // Pārbaudīt vai uzdevums pieder lietotājam
+            $stmt = $pdo->prepare("SELECT statuss FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
+            $stmt->execute([$task_id, $currentUser['id']]);
+            $task = $stmt->fetch();
+            
+            if ($task && $task['statuss'] === 'Jauns') {
+                // Mainīt statusu uz "Procesā"
+                $stmt = $pdo->prepare("UPDATE uzdevumi SET statuss = 'Procesā', sakuma_laiks = NOW() WHERE id = ?");
+                $stmt->execute([$task_id]);
+                
+                // Sākt darba laika uzskaiti
+                $stmt = $pdo->prepare("
+                    INSERT INTO darba_laiks (lietotaja_id, uzdevuma_id, sakuma_laiks)
+                    VALUES (?, ?, NOW())
+                ");
+                $stmt->execute([$currentUser['id'], $task_id]);
+                
+                // Pievienot vēsturi
+                $stmt = $pdo->prepare("
+                    INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
+                    VALUES (?, 'Jauns', 'Procesā', 'Regulārā uzdevuma darbs sākts', ?)
+                ");
+                $stmt->execute([$task_id, $currentUser['id']]);
+                
+                $pdo->commit();
+                setFlashMessage('success', 'Regulārā uzdevuma darbs sākts!');
+            } else {
+                $errors[] = 'Nevar sākt darbu pie šī uzdevuma.';
+            }
+            
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Kļūda sākot darbu: ' . $e->getMessage();
+        }
+    }
+    
+    if ($action === 'pause_work' && isset($_POST['task_id'])) {
+        $task_id = intval($_POST['task_id']);
+        
+        try {
+            // Pabeigt pašreizējo darba laika ierakstu
+            $stmt = $pdo->prepare("
+                UPDATE darba_laiks 
+                SET beigu_laiks = NOW(), 
+                    stundu_skaits = TIMESTAMPDIFF(MINUTE, sakuma_laiks, NOW()) / 60.0
+                WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
+            ");
+            $stmt->execute([$task_id, $currentUser['id']]);
+            
+            setFlashMessage('success', 'Regulārā uzdevuma darbs pauzēts!');
+            
+        } catch (PDOException $e) {
+            $errors[] = 'Kļūda pauzējot darbu: ' . $e->getMessage();
+        }
+    }
+    
+    if ($action === 'resume_work' && isset($_POST['task_id'])) {
+        $task_id = intval($_POST['task_id']);
+        
+        try {
+            // Sākt jaunu darba laika ierakstu
+            $stmt = $pdo->prepare("
+                INSERT INTO darba_laiks (lietotaja_id, uzdevuma_id, sakuma_laiks)
+                VALUES (?, ?, NOW())
+            ");
+            $stmt->execute([$currentUser['id'], $task_id]);
+            
+            setFlashMessage('success', 'Regulārā uzdevuma darbs atsākts!');
+            
+        } catch (PDOException $e) {
+            $errors[] = 'Kļūda atsākot darbu: ' . $e->getMessage();
+        }
+    }
+    
+    if ($action === 'complete_task' && isset($_POST['task_id'])) {
+        $task_id = intval($_POST['task_id']);
+        $komentars = sanitizeInput($_POST['komentars'] ?? '');
+        $faktiskais_ilgums = floatval($_POST['faktiskais_ilgums'] ?? 0);
+        
+        try {
+            $pdo->beginTransaction();
+            
+            // Pārbaudīt vai uzdevums pieder lietotājam
+            $stmt = $pdo->prepare("SELECT statuss FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
+            $stmt->execute([$task_id, $currentUser['id']]);
+            $task = $stmt->fetch();
+            
+            if ($task && in_array($task['statuss'], ['Jauns', 'Procesā'])) {
+                // Pabeigt darba laika uzskaiti
+                $stmt = $pdo->prepare("
+                    UPDATE darba_laiks 
+                    SET beigu_laiks = NOW(), 
+                        stundu_skaits = TIMESTAMPDIFF(MINUTE, sakuma_laiks, NOW()) / 60.0
+                    WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
+                ");
+                $stmt->execute([$task_id, $currentUser['id']]);
+                
+                // Aprēķināt kopējo darba laiku
+                $stmt = $pdo->prepare("
+                    SELECT SUM(stundu_skaits) as kopejais_laiks 
+                    FROM darba_laiks 
+                    WHERE uzdevuma_id = ? AND lietotaja_id = ?
+                ");
+                $stmt->execute([$task_id, $currentUser['id']]);
+                $total_time = $stmt->fetchColumn() ?: 0;
+                
+                // Atjaunot uzdevuma statusu
+                $stmt = $pdo->prepare("
+                    UPDATE uzdevumi 
+                    SET statuss = 'Pabeigts', 
+                        beigu_laiks = NOW(), 
+                        atbildes_komentars = ?,
+                        faktiskais_ilgums = ?
+                    WHERE id = ?
+                ");
+                $stmt->execute([
+                    $komentars, 
+                    $faktiskais_ilgums ?: $total_time, 
+                    $task_id
+                ]);
+                
+                // Pievienot vēsturi
+                $stmt = $pdo->prepare("
+                    INSERT INTO uzdevumu_vesture 
+                    (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
+                    VALUES (?, ?, 'Pabeigts', ?, ?)
+                ");
+                $stmt->execute([
+                    $task_id, 
+                    $task['statuss'], 
+                    'Regulārais uzdevums pabeigts' . ($komentars ? ': ' . $komentars : ''), 
+                    $currentUser['id']
+                ]);
+                
+                // Paziņot menedžerim/administratoram
+                $stmt = $pdo->prepare("
+                    SELECT u.nosaukums, l.id, l.loma 
+                    FROM uzdevumi u, lietotaji l 
+                    WHERE u.id = ? AND l.loma IN ('Administrators', 'Menedžeris') AND l.statuss = 'Aktīvs'
+                ");
+                $stmt->execute([$task_id]);
+                $managers = $stmt->fetchAll();
+                
+                foreach ($managers as $manager) {
+                    createNotification(
+                        $manager['id'],
+                        'Regulārais uzdevums pabeigts',
+                        "Mehāniķis {$currentUser['vards']} {$currentUser['uzvards']} ir pabeidzis regulāro uzdevumu: {$manager['nosaukums']}",
+                        'Statusa maiņa',
+                        'Uzdevums',
+                        $task_id
+                    );
+                }
+                
+                $pdo->commit();
+                setFlashMessage('success', 'Regulārais uzdevums pabeigts!');
+            } else {
+                $errors[] = 'Nevar pabeigt šo uzdevumu.';
+            }
+            
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Kļūda pabeidzot uzdevumu: ' . $e->getMessage();
+        }
+    }
+}
+
 // Filtrēšanas parametri
 $filters = [
     'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
     'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
     'periodicitate' => sanitizeInput($_GET['periodicitate'] ?? ''),
     'date_from' => $_GET['date_from'] ?? date('Y-m-01'),
-    'date_to' => $_GET['date_to'] ?? date('Y-m-d')
+    'date_to' => $_GET['date_to'] ?? date('Y-m-d'),
+    'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
 ];
 
 // Kārtošanas parametri
@@ -24,7 +202,7 @@ $sort = sanitizeInput($_GET['sort'] ?? 'izveidots');
 $order = sanitizeInput($_GET['order'] ?? 'DESC');
 
 // Validēt kārtošanas parametrus
-$allowed_sorts = ['izveidots', 'nosaukums', 'prioritate', 'statuss', 'periodicitate'];
+$allowed_sorts = ['izveidots', 'nosaukums', 'prioritate', 'statuss', 'periodicitate', 'jabeidz_lidz'];
 if (!in_array($sort, $allowed_sorts)) {
     $sort = 'izveidots';
 }
@@ -64,7 +242,24 @@ try {
         $params[] = $filters['periodicitate'];
     }
     
+    // Nokavēto uzdevumu filtrs
+    if ($filters['show_overdue']) {
+        $where_conditions[] = "((u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts')) OR u.statuss IN ('Jauns', 'Procesā'))";
+    }
+    
     $where_clause = 'WHERE ' . implode(' AND ', $where_conditions);
+    
+    // Prioritātes kārtošanas loģika
+    $order_clause = "ORDER BY ";
+    if ($sort === 'prioritate') {
+        $order_clause .= "CASE u.prioritate 
+                          WHEN 'Kritiska' THEN 1 
+                          WHEN 'Augsta' THEN 2 
+                          WHEN 'Vidēja' THEN 3 
+                          WHEN 'Zema' THEN 4 
+                          END " . ($order === 'DESC' ? 'ASC' : 'DESC') . ", ";
+    }
+    $order_clause .= "u.$sort $order";
     
     // Galvenais vaicājums
     $sql = "
@@ -76,14 +271,18 @@ try {
                r.periodicitas_dienas,
                r.laiks as sablona_laiks,
                (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
-               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
+               (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs,
+               CASE 
+                   WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 
+                   ELSE 0 
+               END as ir_nokavets
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
         LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
         $where_clause
-        ORDER BY u.$sort $order
+        $order_clause
         LIMIT $limit OFFSET $offset
     ";
     
@@ -109,6 +308,8 @@ try {
         SELECT r.*, 
                COUNT(u.id) as uzdevumu_skaits,
                SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_skaits,
+               SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvo_skaits,
+               SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēto_skaits,
                MAX(u.izveidots) as pēdējais_uzdevums
         FROM regularo_uzdevumu_sabloni r
         INNER JOIN uzdevumi u ON r.id = u.regulara_uzdevuma_id
@@ -125,6 +326,7 @@ try {
             COUNT(*) as kopā_regulārie,
             SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_regulārie,
             SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi_regulārie,
+            SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēti_regulārie,
             COUNT(DISTINCT u.regulara_uzdevuma_id) as dažādi_šabloni
         FROM uzdevumi u
         WHERE u.piešķirts_id = ? AND u.veids = 'Regulārais'
@@ -136,7 +338,7 @@ try {
     $errors[] = "Kļūda ielādējot regulāros uzdevumus: " . $e->getMessage();
     $regularie_uzdevumi = [];
     $mani_sabloni = [];
-    $statistika = ['kopā_regulārie' => 0, 'pabeigti_regulārie' => 0, 'aktīvi_regulārie' => 0, 'dažādi_šabloni' => 0];
+    $statistika = ['kopā_regulārie' => 0, 'pabeigti_regulārie' => 0, 'aktīvi_regulārie' => 0, 'nokavēti_regulārie' => 0, 'dažādi_šabloni' => 0];
 }
 
 include 'includes/header.php';
@@ -163,6 +365,11 @@ include 'includes/header.php';
     <div class="stat-card" style="border-left-color: var(--warning-color);">
         <div class="stat-number" style="color: var(--warning-color);"><?php echo $statistika['aktīvi_regulārie']; ?></div>
         <div class="stat-label">Aktīvie regulārie</div>
+    </div>
+    
+    <div class="stat-card" style="border-left-color: var(--danger-color);">
+        <div class="stat-number" style="color: var(--danger-color);"><?php echo $statistika['nokavēti_regulārie']; ?></div>
+        <div class="stat-label">Nokavētie uzdevumi</div>
     </div>
     
     <div class="stat-card" style="border-left-color: var(--info-color);">
@@ -195,10 +402,16 @@ include 'includes/header.php';
                         </tr>
                     <?php else: ?>
                         <?php foreach ($mani_sabloni as $sablons): ?>
-                            <tr>
+                            <tr class="<?php echo $sablons['nokavēto_skaits'] > 0 || $sablons['aktīvo_skaits'] > 0 ? 'table-warning' : ''; ?>">
                                 <td>
                                     <div>
                                         <strong><?php echo htmlspecialchars($sablons['nosaukums']); ?></strong>
+                                        <?php if ($sablons['nokavēto_skaits'] > 0): ?>
+                                            <span class="badge badge-danger">Nokavēti: <?php echo $sablons['nokavēto_skaits']; ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($sablons['aktīvo_skaits'] > 0): ?>
+                                            <span class="badge badge-warning">Aktīvi: <?php echo $sablons['aktīvo_skaits']; ?></span>
+                                        <?php endif; ?>
                                         <br><small class="text-muted"><?php echo htmlspecialchars(substr($sablons['apraksts'], 0, 100)) . (strlen($sablons['apraksts']) > 100 ? '...' : ''); ?></small>
                                     </div>
                                 </td>
@@ -232,6 +445,8 @@ include 'includes/header.php';
                                     <div>
                                         <small>Kopā: <?php echo $sablons['uzdevumu_skaits']; ?></small>
                                         <br><small>Pabeigti: <?php echo $sablons['pabeigto_skaits']; ?></small>
+                                        <br><small>Aktīvi: <span class="<?php echo $sablons['aktīvo_skaits'] > 0 ? 'text-warning' : ''; ?>"><?php echo $sablons['aktīvo_skaits']; ?></span></small>
+                                        <br><small>Nokavēti: <span class="<?php echo $sablons['nokavēto_skaits'] > 0 ? 'text-danger' : ''; ?>"><?php echo $sablons['nokavēto_skaits']; ?></span></small>
                                         <br><small>Efektivitāte: <?php echo $sablons['uzdevumu_skaits'] > 0 ? number_format(($sablons['pabeigto_skaits'] / $sablons['uzdevumu_skaits']) * 100, 1) : 0; ?>%</small>
                                     </div>
                                 </td>
@@ -299,6 +514,13 @@ include 'includes/header.php';
             </select>
         </div>
         
+        <div class="filter-col">
+            <label class="form-label">
+                <input type="checkbox" name="show_overdue" value="1" <?php echo $filters['show_overdue'] ? 'checked' : ''; ?>> 
+                Tikai nokavētie/aktīvie
+            </label>
+        </div>
+        
         <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
             <button type="submit" class="btn btn-primary">Filtrēt</button>
             <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
@@ -324,17 +546,18 @@ include 'includes/header.php';
                         <th>Prioritāte</th>
                         <th>Statuss</th>
                         <th>Izveidots</th>
+                        <th>Termiņš</th>
                         <th>Darbības</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($regularie_uzdevumi)): ?>
                         <tr>
-                            <td colspan="6" class="text-center">Nav atrasti regulārie uzdevumi</td>
+                            <td colspan="7" class="text-center">Nav atrasti regulārie uzdevumi</td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($regularie_uzdevumi as $uzdevums): ?>
-                            <tr>
+                            <tr class="<?php echo $uzdevums['ir_nokavets'] ? 'table-danger' : ''; ?>">
                                 <td>
                                     <div>
                                         <strong><?php echo htmlspecialchars($uzdevums['nosaukums']); ?></strong>
@@ -343,6 +566,9 @@ include 'includes/header.php';
                                         <?php endif; ?>
                                         <?php if ($uzdevums['aktīvs_darbs'] > 0): ?>
                                             <span class="working-badge" title="Darbs procesā">⏰ Darbs procesā</span>
+                                        <?php endif; ?>
+                                        <?php if ($uzdevums['ir_nokavets']): ?>
+                                            <span class="badge badge-danger">NOKAVĒTS</span>
                                         <?php endif; ?>
                                     </div>
                                     <small class="text-muted">
@@ -370,6 +596,15 @@ include 'includes/header.php';
                                 </td>
                                 <td>
                                     <small><?php echo formatDate($uzdevums['izveidots']); ?></small>
+                                </td>
+                                <td>
+                                    <?php if ($uzdevums['jabeidz_lidz']): ?>
+                                        <small class="<?php echo $uzdevums['ir_nokavets'] ? 'text-danger' : ''; ?>">
+                                            <?php echo formatDate($uzdevums['jabeidz_lidz']); ?>
+                                        </small>
+                                    <?php else: ?>
+                                        <small class="text-muted">Nav norādīts</small>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
                                     <div class="btn-group">
@@ -442,6 +677,37 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- Uzdevuma pabeigšanas modāls -->
+<div id="completeTaskModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">Pabeigt regulāro uzdevumu</h3>
+            <button onclick="closeModal('completeTaskModal')" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="completeTaskForm" method="POST">
+                <input type="hidden" name="action" value="complete_task">
+                <input type="hidden" name="task_id" id="completeTaskId">
+                
+                <div class="form-group">
+                    <label for="faktiskais_ilgums" class="form-label">Faktiskais izpildes laiks (stundas)</label>
+                    <input type="number" id="faktiskais_ilgums" name="faktiskais_ilgums" class="form-control" step="0.1" min="0">
+                    <small class="form-text text-muted">Atstājiet tukšu, lai automātiski aprēķinātu no darba laika</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="komentars" class="form-label">Komentārs par paveikto darbu</label>
+                    <textarea id="komentars" name="komentars" class="form-control" rows="4" placeholder="Aprakstiet paveikto darbu, izmantotie materiāli, problēmas, u.c."></textarea>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeModal('completeTaskModal')" class="btn btn-secondary">Atcelt</button>
+            <button onclick="document.getElementById('completeTaskForm').submit()" class="btn btn-success">Pabeigt uzdevumu</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // Uzdevuma detaļu skatīšana
 function viewTask(taskId) {
@@ -459,37 +725,37 @@ function viewTask(taskId) {
 
 // Darba sākšana
 function startWork(taskId) {
-    if (confirm('Vai vēlaties sākt darbu pie šī uzdevuma?')) {
+    if (confirm('Vai vēlaties sākt darbu pie šī regulārā uzdevuma?')) {
         submitWorkAction('start_work', taskId);
     }
 }
 
 // Darba pauzēšana
 function pauseWork(taskId) {
-    if (confirm('Vai vēlaties pauzēt darbu pie šī uzdevuma?')) {
+    if (confirm('Vai vēlaties pauzēt darbu pie šī regulārā uzdevuma?')) {
         submitWorkAction('pause_work', taskId);
     }
 }
 
 // Darba atsākšana
 function resumeWork(taskId) {
-    if (confirm('Vai vēlaties atsākt darbu pie šī uzdevuma?')) {
+    if (confirm('Vai vēlaties atsākt darbu pie šī regulārā uzdevuma?')) {
         submitWorkAction('resume_work', taskId);
     }
 }
 
 // Uzdevuma pabeigšana
 function completeTask(taskId) {
-    if (confirm('Vai vēlaties pabeigt šo uzdevumu?')) {
-        window.location.href = `my_tasks.php?complete=${taskId}`;
-    }
+    document.getElementById('completeTaskId').value = taskId;
+    document.getElementById('faktiskais_ilgums').value = '';
+    document.getElementById('komentars').value = '';
+    openModal('completeTaskModal');
 }
 
 // Palīgfunkcija darba darbībām
 function submitWorkAction(action, taskId) {
     const form = document.createElement('form');
     form.method = 'POST';
-    form.action = 'my_tasks.php';
     form.style.display = 'none';
     
     const actionInput = document.createElement('input');
@@ -510,7 +776,7 @@ function submitWorkAction(action, taskId) {
 }
 
 // Filtru automātiska iesniegšana
-document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').forEach(element => {
+document.querySelectorAll('#filterForm select, #filterForm input[type="date"], #filterForm input[type="checkbox"]').forEach(element => {
     element.addEventListener('change', function() {
         document.getElementById('filterForm').submit();
     });
@@ -520,7 +786,7 @@ document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').
 <style>
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: var(--spacing-lg);
     margin-bottom: var(--spacing-lg);
 }
@@ -529,10 +795,21 @@ document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').
     display: inline-block;
     padding: 2px 6px;
     font-size: 11px;
-    background: var(--info-color);
     color: white;
     border-radius: 3px;
     margin-left: 5px;
+}
+
+.badge-info {
+    background: var(--info-color);
+}
+
+.badge-warning {
+    background: var(--warning-color);
+}
+
+.badge-danger {
+    background: var(--danger-color);
 }
 
 .working-badge {
@@ -553,6 +830,14 @@ document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').
     margin: 0;
     padding: 4px 8px;
     min-width: 32px;
+}
+
+.table-warning {
+    background-color: rgba(255, 193, 7, 0.1);
+}
+
+.table-danger {
+    background-color: rgba(220, 53, 69, 0.1);
 }
 
 @media (max-width: 768px) {
