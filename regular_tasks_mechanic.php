@@ -192,7 +192,7 @@ $filters = [
     'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
     'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
     'periodicitate' => sanitizeInput($_GET['periodicitate'] ?? ''),
-    'date_from' => $_GET['date_from'] ?? date('Y-m-01'),
+    'date_from' => $_GET['date_from'] ?? date('Y-m-01', strtotime('-2 months')), // Pēdējie 3 mēneši
     'date_to' => $_GET['date_to'] ?? date('Y-m-d'),
     'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
 ];
@@ -220,11 +220,14 @@ try {
     $where_conditions = ["u.piešķirts_id = ? AND u.veids = 'Regulārais'"];
     $params = [$currentUser['id']];
     
-    // Datuma filtrs
+    // Datuma filtrs - ja nav norādīts, rādīt pēdējo 3 mēnešu uzdevumus
     if (!empty($filters['date_from']) && !empty($filters['date_to'])) {
         $where_conditions[] = "DATE(u.izveidots) BETWEEN ? AND ?";
         $params[] = $filters['date_from'];
         $params[] = $filters['date_to'];
+    } else {
+        // Ja nav izvēlēts datums, rādīt pēdējos 3 mēnešus
+        $where_conditions[] = "u.izveidots >= DATE_SUB(NOW(), INTERVAL 3 MONTH)";
     }
     
     if (!empty($filters['statuss'])) {
@@ -511,6 +514,7 @@ include 'includes/header.php';
         <div class="filter-col">
             <label for="date_from" class="form-label">Datums no</label>
             <input type="date" id="date_from" name="date_from" class="form-control" value="<?php echo $filters['date_from']; ?>">
+            <small class="form-text text-muted">Pēc noklusējuma: pēdējie 3 mēneši</small>
         </div>
         
         <div class="filter-col">
@@ -563,6 +567,7 @@ include 'includes/header.php';
         <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
             <button type="submit" class="btn btn-primary">Filtrēt</button>
             <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
+            <button type="button" onclick="showAllTasks()" class="btn btn-info">Visi uzdevumi</button>
         </div>
     </form>
 </div>
@@ -592,7 +597,15 @@ include 'includes/header.php';
                 <tbody>
                     <?php if (empty($regularie_uzdevumi)): ?>
                         <tr>
-                            <td colspan="7" class="text-center">Nav atrasti regulārie uzdevumi</td>
+                            <td colspan="7" class="text-center">
+                                <p>Nav atrasti regulārie uzdevumi izvēlētajā datuma diapazonā.</p>
+                                <?php if (!empty($filters['date_from']) || !empty($filters['date_to']) || !empty($filters['statuss']) || !empty($filters['prioritate']) || !empty($filters['periodicitate'])): ?>
+                                    <small class="text-muted">
+                                        Mēģiniet mainīt filtrus vai datuma diapazonu.<br>
+                                        Pašlaik tiek rādīti uzdevumi no <?php echo $filters['date_from']; ?> līdz <?php echo $filters['date_to']; ?>
+                                    </small>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($regularie_uzdevumi as $uzdevums): ?>
