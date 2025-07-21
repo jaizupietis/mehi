@@ -310,14 +310,20 @@ try {
                SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_skaits,
                SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvo_skaits,
                SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēto_skaits,
-               MAX(u.izveidots) as pēdējais_uzdevums
+               MAX(u.izveidots) as pēdējais_uzdevums,
+               GROUP_CONCAT(
+                   CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 
+                       CONCAT(u.id, '|', u.statuss, '|', IFNULL((SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL), 0))
+                   END 
+                   SEPARATOR ';'
+               ) as aktīvie_uzdevumi_info
         FROM regularo_uzdevumu_sabloni r
         INNER JOIN uzdevumi u ON r.id = u.regulara_uzdevuma_id
         WHERE u.piešķirts_id = ? AND r.aktīvs = 1
         GROUP BY r.id
-        ORDER BY r.prioritate DESC, r.nosaukums
+        ORDER BY aktīvo_skaits DESC, nokavēto_skaits DESC, r.prioritate DESC, r.nosaukums
     ");
-    $stmt->execute([$currentUser['id']]);
+    $stmt->execute([$currentUser['id'], $currentUser['id']]);
     $mani_sabloni = $stmt->fetchAll();
     
     // Statistika
@@ -393,12 +399,13 @@ include 'includes/header.php';
                         <th>Prioritāte</th>
                         <th>Statistika</th>
                         <th>Pēdējais uzdevums</th>
+                        <th>Aktīvie uzdevumi</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($mani_sabloni)): ?>
                         <tr>
-                            <td colspan="5" class="text-center">Jums nav piešķirti regulārie uzdevumi</td>
+                            <td colspan="6" class="text-center">Jums nav piešķirti regulārie uzdevumi</td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($mani_sabloni as $sablons): ?>
@@ -455,6 +462,38 @@ include 'includes/header.php';
                                         <small><?php echo formatDate($sablons['pēdējais_uzdevums']); ?></small>
                                     <?php else: ?>
                                         <small class="text-muted">Nav</small>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($sablons['aktīvie_uzdevumi_info']): ?>
+                                        <?php 
+                                        $aktīvie_uzdevumi = explode(';', $sablons['aktīvie_uzdevumi_info']);
+                                        foreach ($aktīvie_uzdevumi as $uzdevums_info):
+                                            if (empty($uzdevums_info)) continue;
+                                            $info_parts = explode('|', $uzdevums_info);
+                                            $uzdevums_id = $info_parts[0];
+                                            $uzdevums_statuss = $info_parts[1];
+                                            $aktīvs_darbs = intval($info_parts[2]);
+                                        ?>
+                                            <div class="task-action-row mb-1">
+                                                <small>ID: <?php echo $uzdevums_id; ?></small>
+                                                <span class="status-badge <?php echo getStatusClass($uzdevums_statuss); ?> mx-1">
+                                                    <?php echo $uzdevums_statuss; ?>
+                                                </span>
+                                                <?php if ($uzdevums_statuss === 'Jauns'): ?>
+                                                    <button onclick="startWork(<?php echo $uzdevums_id; ?>)" class="btn btn-xs btn-success">Sākt</button>
+                                                <?php elseif ($uzdevums_statuss === 'Procesā'): ?>
+                                                    <?php if ($aktīvs_darbs > 0): ?>
+                                                        <button onclick="pauseWork(<?php echo $uzdevums_id; ?>)" class="btn btn-xs btn-warning">Pauzēt</button>
+                                                    <?php else: ?>
+                                                        <button onclick="resumeWork(<?php echo $uzdevums_id; ?>)" class="btn btn-xs btn-warning">Turpināt</button>
+                                                    <?php endif; ?>
+                                                    <button onclick="completeTask(<?php echo $uzdevums_id; ?>)" class="btn btn-xs btn-success">Pabeigt</button>
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    <?php else: ?>
+                                        <small class="text-muted">Nav aktīvo uzdevumu</small>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -832,6 +871,24 @@ document.querySelectorAll('#filterForm select, #filterForm input[type="date"], #
     min-width: 32px;
 }
 
+.btn-xs {
+    padding: 2px 6px;
+    font-size: 11px;
+    line-height: 1.2;
+}
+
+.task-action-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.task-action-row .status-badge {
+    font-size: 10px;
+    padding: 1px 4px;
+}
+
 .table-warning {
     background-color: rgba(255, 193, 7, 0.1);
 }
@@ -843,6 +900,17 @@ document.querySelectorAll('#filterForm select, #filterForm input[type="date"], #
 @media (max-width: 768px) {
     .stats-grid {
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    
+    .task-action-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 2px;
+    }
+    
+    .task-action-row .btn {
+        font-size: 10px;
+        padding: 1px 4px;
     }
 }
 </style>
