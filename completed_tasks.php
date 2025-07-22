@@ -10,14 +10,14 @@ $pageHeader = 'Pabeigto uzdevumu vēsture';
 $currentUser = getCurrentUser();
 $errors = [];
 
-// Filtrēšanas parametri
+// UZLABOTI Filtrēšanas parametri - ar pareiziem nosaukumiem
 $filters = [
-    'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
+    'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),      // LABOTS
     'vieta' => intval($_GET['vieta'] ?? 0),
-    'veids' => sanitizeInput($_GET['veids'] ?? ''),
-    'date_from' => $_GET['date_from'] ?? '',
-    'date_to' => $_GET['date_to'] ?? '',
-    'meklēt' => sanitizeInput($_GET['meklēt'] ?? '')
+    'veids' => sanitizeInput($_GET['veids'] ?? ''),               // LABOTS - bija 'task_type'
+    'date_from' => $_GET['date_from'] ?? '',                      // LABOTS - bija 'completed_from'
+    'date_to' => $_GET['date_to'] ?? '',                          // LABOTS - bija 'completed_to'
+    'search' => sanitizeInput($_GET['search'] ?? '')              // LABOTS - bija 'meklēt'
 ];
 
 // Noklusējuma datuma filtri tikai statistikai (neierobežo uzdevumu sarakstu)
@@ -47,11 +47,11 @@ try {
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
     
-    // Būvēt vaicājumu
+    // UZLABOTS Būvēt vaicājumu ar pareizu filtru apstrādi
     $where_conditions = ["u.piešķirts_id = ? AND u.statuss = 'Pabeigts'"];
     $params = [$currentUser['id']];
     
-    // Datuma filtrs
+    // UZLABOTS Datuma filtrs - tikai ja norādīts
     if (!empty($filters['date_from']) && !empty($filters['date_to'])) {
         $where_conditions[] = "DATE(u.beigu_laiks) BETWEEN ? AND ?";
         $params[] = $filters['date_from'];
@@ -79,10 +79,12 @@ try {
         $params[] = $filters['veids'];
     }
     
-    if (!empty($filters['meklēt'])) {
+    // UZLABOTS Meklēšanas filtrs
+    if (!empty($filters['search'])) {
         $where_conditions[] = "(u.nosaukums LIKE ? OR u.apraksts LIKE ?)";
-        $params[] = '%' . $filters['meklēt'] . '%';
-        $params[] = '%' . $filters['meklēt'] . '%';
+        $search_param = "%{$filters['search']}%";
+        $params[] = $search_param;
+        $params[] = $search_param;
     }
     
     $where_clause = 'WHERE ' . implode(' AND ', $where_conditions);
@@ -214,18 +216,18 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- Filtru josla -->
+<!-- UZLABOTA Filtru josla ar pareiziem name atribūtiem -->
 <div class="filter-bar">
     <form method="GET" id="filterForm" class="filter-row">
         <div class="filter-col">
-            <label for="meklēt" class="form-label">Meklēt</label>
+            <label for="search" class="form-label">Meklēt</label>
             <input 
                 type="text" 
-                id="meklēt" 
-                name="meklēt" 
+                id="search" 
+                name="search" 
                 class="form-control" 
                 placeholder="Meklēt uzdevumos..."
-                value="<?php echo htmlspecialchars($filters['meklēt']); ?>"
+                value="<?php echo htmlspecialchars($filters['search']); ?>"
             >
         </div>
         
@@ -322,7 +324,7 @@ include 'includes/header.php';
                         <tr>
                             <td colspan="7" class="text-center">
                                 <p>Nav atrasti pabeigti uzdevumi izvēlētajos filtros.</p>
-                                <?php if (!empty($filters['date_from']) || !empty($filters['date_to']) || !empty($filters['prioritate']) || !empty($filters['veids']) || !empty($filters['vieta']) || !empty($filters['meklēt'])): ?>
+                                <?php if (!empty($filters['date_from']) || !empty($filters['date_to']) || !empty($filters['prioritate']) || !empty($filters['veids']) || !empty($filters['vieta']) || !empty($filters['search'])): ?>
                                     <small class="text-muted">
                                         Mēģiniet mainīt filtrus vai noņemt ierobežojumus.<br>
                                         <?php if (!empty($filters['date_from']) || !empty($filters['date_to'])): ?>
@@ -450,35 +452,31 @@ include 'includes/header.php';
 </div>
 
 <script>
+// UZLABOTS JavaScript ar automātisko filtru iesniegšanu
+
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     const form = document.getElementById('filterForm');
-    const searchInput = document.getElementById('meklēt');
     
-    // Event listeners filtru elementiem
+    // Automātiskā filtru iesniegšana - visiem filtru elementiem
     document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').forEach(element => {
         element.addEventListener('change', function() {
+            console.log('Filter changed:', this.name, this.value); // Debug
             form.submit();
         });
     });
     
     // Meklēšanas lauka debounce
+    const searchInput = document.getElementById('search');
     let searchTimeout;
+    
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(() => {
+            console.log('Search triggered:', this.value); // Debug
             form.submit();
-        }, 500);
+        }, 500); // 500ms delay
     });
-    
-    // Filtru poga
-    const filterButton = form.querySelector('button[type="submit"]');
-    if (filterButton) {
-        filterButton.addEventListener('click', function(e) {
-            e.preventDefault();
-            form.submit();
-        });
-    }
 });
 
 // Uzdevuma detaļu skatīšana
@@ -515,6 +513,34 @@ function sortBy(column, direction) {
 function clearFilters() {
     window.location.href = 'completed_tasks.php';
 }
+
+// Ātrā datuma iestatīšana
+function setDateRange(days) {
+    const today = new Date();
+    const pastDate = new Date(today.getTime() - (days * 24 * 60 * 60 * 1000));
+    
+    document.getElementById('date_from').value = pastDate.toISOString().split('T')[0];
+    document.getElementById('date_to').value = today.toISOString().split('T')[0];
+    
+    // Automātiski iesniegšana pēc datuma iestatīšanas
+    document.getElementById('filterForm').submit();
+}
+
+// Pievienot ātrās pogas pēc lapas ielādes
+document.addEventListener('DOMContentLoaded', function() {
+    const quickDateButtons = document.createElement('div');
+    quickDateButtons.className = 'mb-2 text-center';
+    quickDateButtons.innerHTML = `
+        <small class="text-muted">Ātrie filtri: </small>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(7)">Pēdējās 7 dienas</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(30)">Pēdējās 30 dienas</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(90)">Pēdējās 90 dienas</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Visi uzdevumi</button>
+    `;
+    
+    const form = document.querySelector('.filter-bar');
+    form.parentNode.insertBefore(quickDateButtons, form);
+});
 </script>
 
 <style>
@@ -560,6 +586,7 @@ function clearFilters() {
     background: var(--secondary-color);
 }
 
+/* Uzlabots responsīvais dizains */
 @media (max-width: 768px) {
     .stats-grid {
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -568,6 +595,65 @@ function clearFilters() {
     .table-responsive {
         font-size: var(--font-size-sm);
     }
+    
+    .filter-row {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+    }
+    
+    .filter-col {
+        width: 100%;
+    }
+}
+
+/* Ātrās pogas stils */
+.btn-sm {
+    margin: 2px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+/* Uzlabots formas stils */
+.filter-bar {
+    background: var(--white);
+    padding: var(--spacing-md);
+    border-radius: var(--border-radius);
+    margin-bottom: var(--spacing-lg);
+    box-shadow: var(--shadow-sm);
+}
+
+.filter-row {
+    display: flex;
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+    align-items: end;
+}
+
+.filter-col {
+    flex: 1;
+    min-width: 200px;
+}
+
+.sort-controls {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: center;
+    margin-bottom: var(--spacing-md);
+}
+
+.sort-btn {
+    background: var(--gray-200);
+    border: none;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--border-radius);
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.sort-btn:hover,
+.sort-btn.active {
+    background: var(--secondary-color);
+    color: var(--white);
 }
 </style>
 
