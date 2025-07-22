@@ -189,12 +189,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Filtrēšanas parametri
+// Filtrēšanas parametri - UZLABOTS: noņēmām noklusējuma veidu, lai rādītu visus uzdevumus
 $filters = [
     'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
     'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
     'vieta' => intval($_GET['vieta'] ?? 0),
-    'veids' => sanitizeInput($_GET['veids'] ?? 'Ikdienas'), // Pēc noklusējuma rādīt ikdienas uzdevumus
+    'veids' => sanitizeInput($_GET['veids'] ?? ''), // Noņēmām 'Ikdienas' noklusējumu
     'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
 ];
 
@@ -220,7 +220,7 @@ try {
     $where_conditions = ["u.piešķirts_id = ?"];
     $params = [$currentUser['id']];
     
-    // Uzdevuma veida filtrs
+    // UZLABOTS: Uzdevuma veida filtrs - tikai ja norādīts
     if (!empty($filters['veids'])) {
         $where_conditions[] = "u.veids = ?";
         $params[] = $filters['veids'];
@@ -271,6 +271,7 @@ try {
                (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs,
                CASE 
                    WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 
+                   WHEN u.statuss IN ('Jauns', 'Procesā') AND DATEDIFF(NOW(), u.izveidots) > 3 THEN 1
                    ELSE 0 
                END as ir_nokavets
         FROM uzdevumi u
@@ -441,6 +442,21 @@ include 'includes/header.php';
     </button>
 </div>
 
+<!-- Ātras darbības -->
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap gap-2">
+            <a href="?veids=Ikdienas" class="btn btn-<?php echo $filters['veids'] === 'Ikdienas' ? 'primary' : 'outline-primary'; ?>">Ikdienas uzdevumi</a>
+            <a href="?veids=Regulārais" class="btn btn-<?php echo $filters['veids'] === 'Regulārais' ? 'info' : 'outline-info'; ?>">Regulārie uzdevumi</a>
+            <a href="?" class="btn btn-<?php echo empty($filters['veids']) ? 'success' : 'outline-success'; ?>">Visi uzdevumi</a>
+            <a href="?statuss=Jauns" class="btn btn-outline-warning">Tikai Jaunie</a>
+            <a href="?statuss=Procesā" class="btn btn-outline-warning">Tikai Procesā</a>
+            <a href="?show_overdue=1" class="btn btn-outline-danger">Nokavētie</a>
+            <a href="completed_tasks.php" class="btn btn-outline-success">Pabeigto uzdevumu vēsture</a>
+        </div>
+    </div>
+</div>
+
 <!-- Uzdevumu saraksts -->
 <div class="tasks-grid">
     <?php if (empty($uzdevumi)): ?>
@@ -450,6 +466,8 @@ include 'includes/header.php';
                 <p>Jums pašlaik nav piešķirti uzdevumi atbilstoši izvēlētajiem filtriem.</p>
                 <?php if (!empty($filters['veids']) || !empty($filters['statuss']) || !empty($filters['prioritate']) || $filters['vieta'] > 0): ?>
                     <p><a href="my_tasks.php" class="btn btn-primary">Skatīt visus uzdevumus</a></p>
+                <?php else: ?>
+                    <p>Jums vēl nav piešķirts neviens uzdevums.</p>
                 <?php endif; ?>
             </div>
         </div>
