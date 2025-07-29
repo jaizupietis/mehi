@@ -1,660 +1,326 @@
 <?php
+// completed_tasks.php - labots filtru kods
+session_start();
 require_once 'config.php';
 
-// Pārbaudīt atļaujas
-requireRole(ROLE_MECHANIC);
-
-$pageTitle = 'Pabeigto uzdevumu vēsture';
-$pageHeader = 'Pabeigto uzdevumu vēsture';
-
-$currentUser = getCurrentUser();
-$errors = [];
-
-// UZLABOTI Filtrēšanas parametri - ar pareiziem nosaukumiem
-$filters = [
-    'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),      // LABOTS
-    'vieta' => intval($_GET['vieta'] ?? 0),
-    'veids' => sanitizeInput($_GET['veids'] ?? ''),               // LABOTS - bija 'task_type'
-    'date_from' => $_GET['date_from'] ?? '',                      // LABOTS - bija 'completed_from'
-    'date_to' => $_GET['date_to'] ?? '',                          // LABOTS - bija 'completed_to'
-    'search' => sanitizeInput($_GET['search'] ?? '')              // LABOTS - bija 'meklēt'
-];
-
-// Noklusējuma datuma filtri tikai statistikai (neierobežo uzdevumu sarakstu)
-$default_date_from = date('Y-m-01', strtotime('-6 months'));
-$default_date_to = date('Y-m-d');
-
-// Kārtošanas parametri
-$sort = sanitizeInput($_GET['sort'] ?? 'beigu_laiks');
-$order = sanitizeInput($_GET['order'] ?? 'DESC');
-
-// Validēt kārtošanas parametrus
-$allowed_sorts = ['beigu_laiks', 'nosaukums', 'prioritate', 'faktiskais_ilgums', 'izveidots'];
-if (!in_array($sort, $allowed_sorts)) {
-    $sort = 'beigu_laiks';
-}
-if (!in_array($order, ['ASC', 'DESC'])) {
-    $order = 'DESC';
+// Pārbaude vai lietotājs ir pieteicies un ir mehāniķis
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'mechanic') {
+    header('Location: login.php');
+    exit;
 }
 
-// Lapošana
-$page = max(1, intval($_GET['page'] ?? 1));
-$limit = 20;
-$offset = ($page - 1) * $limit;
+// Filtru parametru iegūšana
+$search = isset($_GET['search']) ? trim($_GET['search']) : '';
+$completed_from = isset($_GET['completed_from']) ? $_GET['completed_from'] : '';
+$completed_to = isset($_GET['completed_to']) ? $_GET['completed_to'] : '';
+$priority_filter = isset($_GET['priority']) ? $_GET['priority'] : '';
+$task_type_filter = isset($_GET['task_type']) ? $_GET['task_type'] : '';
 
-try {
-    // Iegūt filtru datus
-    $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
-    $vietas = $stmt->fetchAll();
-    
-    // UZLABOTS Būvēt vaicājumu ar pareizu filtru apstrādi
-    $where_conditions = ["u.piešķirts_id = ? AND u.statuss = 'Pabeigts'"];
-    $params = [$currentUser['id']];
-    
-    // UZLABOTS Datuma filtrs - tikai ja norādīts
-    if (!empty($filters['date_from']) && !empty($filters['date_to'])) {
-        $where_conditions[] = "DATE(u.beigu_laiks) BETWEEN ? AND ?";
-        $params[] = $filters['date_from'];
-        $params[] = $filters['date_to'];
-    } elseif (!empty($filters['date_from'])) {
-        $where_conditions[] = "DATE(u.beigu_laiks) >= ?";
-        $params[] = $filters['date_from'];
-    } elseif (!empty($filters['date_to'])) {
-        $where_conditions[] = "DATE(u.beigu_laiks) <= ?";
-        $params[] = $filters['date_to'];
-    }
-    
-    if (!empty($filters['prioritate'])) {
-        $where_conditions[] = "u.prioritate = ?";
-        $params[] = $filters['prioritate'];
-    }
-    
-    if ($filters['vieta'] > 0) {
-        $where_conditions[] = "u.vietas_id = ?";
-        $params[] = $filters['vieta'];
-    }
-    
-    if (!empty($filters['veids'])) {
-        $where_conditions[] = "u.veids = ?";
-        $params[] = $filters['veids'];
-    }
-    
-    // UZLABOTS Meklēšanas filtrs
-    if (!empty($filters['search'])) {
-        $where_conditions[] = "(u.nosaukums LIKE ? OR u.apraksts LIKE ?)";
-        $search_param = "%{$filters['search']}%";
-        $params[] = $search_param;
-        $params[] = $search_param;
-    }
-    
-    $where_clause = 'WHERE ' . implode(' AND ', $where_conditions);
-    
-    // Prioritātes kārtošanas loģika
-    $order_clause = "ORDER BY ";
-    if ($sort === 'prioritate') {
-        $order_clause .= "CASE u.prioritate 
-                          WHEN 'Kritiska' THEN 1 
-                          WHEN 'Augsta' THEN 2 
-                          WHEN 'Vidēja' THEN 3 
-                          WHEN 'Zema' THEN 4 
-                          END " . ($order === 'DESC' ? 'ASC' : 'DESC') . ", ";
-    }
-    $order_clause .= "u.$sort $order";
-    
-    // Galvenais vaicājums
-    $sql = "
-        SELECT u.*, 
-               v.nosaukums as vietas_nosaukums,
-               i.nosaukums as iekartas_nosaukums,
-               k.nosaukums as kategorijas_nosaukums,
-               r.periodicitate,
-               (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
-               (SELECT SUM(stundu_skaits) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ?) as kopejais_darba_laiks
-        FROM uzdevumi u
-        LEFT JOIN vietas v ON u.vietas_id = v.id
-        LEFT JOIN iekartas i ON u.iekartas_id = i.id
-        LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
-        LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-        $where_clause
-        $order_clause
-        LIMIT $limit OFFSET $offset
-    ";
-    
-    $params[] = $currentUser['id']; // Priekš kopejais_darba_laiks subquery
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $pabeigti_uzdevumi = $stmt->fetchAll();
-    
-    // Iegūt kopējo ierakstu skaitu
-    $count_sql = "
-        SELECT COUNT(*) 
-        FROM uzdevumi u
-        LEFT JOIN vietas v ON u.vietas_id = v.id
-        LEFT JOIN iekartas i ON u.iekartas_id = i.id
-        LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
-        LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-        $where_clause
-    ";
-    $count_stmt = $pdo->prepare($count_sql);
-    $count_stmt->execute(array_slice($params, 0, -1)); // Bez kopejais_darba_laiks parametra
-    $total_records = $count_stmt->fetchColumn();
-    $total_pages = ceil($total_records / $limit);
-    
-    // Statistika - izmantot noklusējuma datumus, ja nav filtru
-    $stats_where = "u.piešķirts_id = ? AND u.statuss = 'Pabeigts'";
-    $stats_params = [$currentUser['id']];
-    
-    // Statistikai izmantot datuma filtrus vai noklusējuma periodu
-    $stats_date_from = !empty($filters['date_from']) ? $filters['date_from'] : $default_date_from;
-    $stats_date_to = !empty($filters['date_to']) ? $filters['date_to'] : $default_date_to;
-    
-    // Pievienot datuma ierobežojumus statistikai
-    $stats_where .= " AND DATE(u.beigu_laiks) BETWEEN ? AND ?";
-    $stats_params[] = $stats_date_from;
-    $stats_params[] = $stats_date_to;
-    
-    $stmt = $pdo->prepare("
-        SELECT 
-            COUNT(*) as kopā_pabeigti,
-            COUNT(CASE WHEN u.veids = 'Ikdienas' THEN 1 END) as ikdienas_pabeigti,
-            COUNT(CASE WHEN u.veids = 'Regulārais' THEN 1 END) as regularie_pabeigti,
-            AVG(u.faktiskais_ilgums) as videjais_ilgums,
-            SUM(u.faktiskais_ilgums) as kopejais_ilgums
-        FROM uzdevumi u
-        WHERE $stats_where
-    ");
-    $stmt->execute($stats_params);
-    $statistika = $stmt->fetch();
-    
-} catch (PDOException $e) {
-    $errors[] = "Kļūda ielādējot pabeigtos uzdevumus: " . $e->getMessage();
-    $pabeigti_uzdevumi = [];
-    $statistika = ['kopā_pabeigti' => 0, 'ikdienas_pabeigti' => 0, 'regularie_pabeigti' => 0, 'videjais_ilgums' => 0, 'kopejais_ilgums' => 0];
+// SQL vaicājuma veidošana
+$sql = "SELECT t.*, l.name as location_name,
+               CASE 
+                   WHEN t.type = 'daily' THEN 'Ikdienas'
+                   WHEN t.type = 'regular' THEN 'Regulārais'
+                   ELSE t.type 
+               END as type_display,
+               CASE 
+                   WHEN t.priority = 'critical' THEN 'Kritiska'
+                   WHEN t.priority = 'high' THEN 'Augsta'
+                   WHEN t.priority = 'medium' THEN 'Vidēja'
+                   WHEN t.priority = 'low' THEN 'Zema'
+                   ELSE t.priority 
+               END as priority_display
+        FROM tasks t 
+        LEFT JOIN locations l ON t.location_id = l.id 
+        WHERE t.assigned_to = ? AND t.status = 'completed'";
+
+$params = [$_SESSION['user_id']];
+$param_types = "i";
+
+// Pievienot meklēšanas filtru
+if (!empty($search)) {
+    $sql .= " AND (t.title LIKE ? OR t.description LIKE ?)";
+    $search_param = "%$search%";
+    $params[] = $search_param;
+    $params[] = $search_param;
+    $param_types .= "ss";
 }
 
-include 'includes/header.php';
+// Pievienot datuma filtrus
+if (!empty($completed_from)) {
+    $sql .= " AND DATE(t.completed_at) >= ?";
+    $params[] = $completed_from;
+    $param_types .= "s";
+}
+
+if (!empty($completed_to)) {
+    $sql .= " AND DATE(t.completed_at) <= ?";
+    $params[] = $completed_to;
+    $param_types .= "s";
+}
+
+// Pievienot prioritātes filtru
+if (!empty($priority_filter) && $priority_filter !== 'all') {
+    $sql .= " AND t.priority = ?";
+    $params[] = $priority_filter;
+    $param_types .= "s";
+}
+
+// Pievienot uzdevuma veida filtru
+if (!empty($task_type_filter) && $task_type_filter !== 'all') {
+    $sql .= " AND t.type = ?";
+    $params[] = $task_type_filter;
+    $param_types .= "s";
+}
+
+$sql .= " ORDER BY t.completed_at DESC";
+
+// Vaicājuma izpilde
+$stmt = $conn->prepare($sql);
+if (!empty($params)) {
+    $stmt->bind_param($param_types, ...$params);
+}
+$stmt->execute();
+$result = $stmt->get_result();
 ?>
 
-<?php if (!empty($errors)): ?>
-    <?php foreach ($errors as $error): ?>
-        <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
-    <?php endforeach; ?>
-<?php endif; ?>
-
-<!-- Statistika -->
-<div class="stats-grid mb-4">
-    <div class="stat-card">
-        <div class="stat-number"><?php echo $statistika['kopā_pabeigti']; ?></div>
-        <div class="stat-label">Kopā pabeigti</div>
-        <small class="text-muted">
-            <?php if (!empty($filters['date_from']) || !empty($filters['date_to'])): ?>
-                <?php echo $filters['date_from'] ?: 'sākums'; ?> - <?php echo $filters['date_to'] ?: 'beigas'; ?>
-            <?php else: ?>
-                Pēdējie 6 mēneši
-            <?php endif; ?>
-        </small>
-    </div>
-    
-    <div class="stat-card" style="border-left-color: var(--info-color);">
-        <div class="stat-number" style="color: var(--info-color);"><?php echo $statistika['ikdienas_pabeigti']; ?></div>
-        <div class="stat-label">Ikdienas uzdevumi</div>
-    </div>
-    
-    <div class="stat-card" style="border-left-color: var(--secondary-color);">
-        <div class="stat-number" style="color: var(--secondary-color);"><?php echo $statistika['regularie_pabeigti']; ?></div>
-        <div class="stat-label">Regulārie uzdevumi</div>
-    </div>
-    
-    <div class="stat-card" style="border-left-color: var(--warning-color);">
-        <div class="stat-number" style="color: var(--warning-color);"><?php echo number_format($statistika['videjais_ilgums'], 1); ?>h</div>
-        <div class="stat-label">Vidējais ilgums</div>
-    </div>
-    
-    <div class="stat-card" style="border-left-color: var(--success-color);">
-        <div class="stat-number" style="color: var(--success-color);"><?php echo number_format($statistika['kopejais_ilgums'], 1); ?>h</div>
-        <div class="stat-label">Kopējais darba laiks</div>
-    </div>
-</div>
-
-<!-- UZLABOTA Filtru josla ar pareiziem name atribūtiem -->
-<div class="filter-bar">
-    <form method="GET" id="filterForm" class="filter-row">
-        <div class="filter-col">
-            <label for="search" class="form-label">Meklēt</label>
-            <input 
-                type="text" 
-                id="search" 
-                name="search" 
-                class="form-control" 
-                placeholder="Meklēt uzdevumos..."
-                value="<?php echo htmlspecialchars($filters['search']); ?>"
-            >
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pabeiktie uzdevumi</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4">
+        <h2>Pabeiktie uzdevumi</h2>
+        
+        <!-- Filtru forma -->
+        <form method="GET" class="mb-4">
+            <div class="row g-3">
+                <!-- Meklēšana -->
+                <div class="col-md-3">
+                    <label class="form-label">Meklēt</label>
+                    <input type="text" class="form-control" name="search" 
+                           value="<?php echo htmlspecialchars($search); ?>" 
+                           placeholder="Meklēt uzdevumos...">
+                </div>
+                
+                <!-- Pabeigts no -->
+                <div class="col-md-2">
+                    <label class="form-label">Pabeigts no</label>
+                    <input type="date" class="form-control" name="completed_from" 
+                           value="<?php echo htmlspecialchars($completed_from); ?>">
+                </div>
+                
+                <!-- Pabeigts līdz -->
+                <div class="col-md-2">
+                    <label class="form-label">Pabeigts līdz</label>
+                    <input type="date" class="form-control" name="completed_to" 
+                           value="<?php echo htmlspecialchars($completed_to); ?>">
+                </div>
+                
+                <!-- Prioritāte -->
+                <div class="col-md-2">
+                    <label class="form-label">Prioritāte</label>
+                    <select name="priority" class="form-control">
+                        <option value="">Visas prioritātes</option>
+                        <option value="critical" <?php echo $priority_filter === 'critical' ? 'selected' : ''; ?>>Kritiska</option>
+                        <option value="high" <?php echo $priority_filter === 'high' ? 'selected' : ''; ?>>Augsta</option>
+                        <option value="medium" <?php echo $priority_filter === 'medium' ? 'selected' : ''; ?>>Vidēja</option>
+                        <option value="low" <?php echo $priority_filter === 'low' ? 'selected' : ''; ?>>Zema</option>
+                    </select>
+                </div>
+                
+                <!-- Uzdevuma veids -->
+                <div class="col-md-2">
+                    <label class="form-label">Uzdevuma veids</label>
+                    <select name="task_type" class="form-control">
+                        <option value="">Visi veidi</option>
+                        <option value="daily" <?php echo $task_type_filter === 'daily' ? 'selected' : ''; ?>>Ikdienas</option>
+                        <option value="regular" <?php echo $task_type_filter === 'regular' ? 'selected' : ''; ?>>Regulārais</option>
+                    </select>
+                </div>
+                
+                <!-- Pogas -->
+                <div class="col-md-1">
+                    <label class="form-label">&nbsp;</label>
+                    <div>
+                        <button type="submit" class="btn btn-primary btn-sm">Filtrēt</button>
+                        <a href="completed_tasks.php" class="btn btn-secondary btn-sm">Notīrīt</a>
+                    </div>
+                </div>
+            </div>
+        </form>
+        
+        <!-- Rezultātu skaits -->
+        <div class="mb-3">
+            <small class="text-muted">Atrasti: <?php echo $result->num_rows; ?> uzdevumi</small>
         </div>
         
-        <div class="filter-col">
-            <label for="date_from" class="form-label">Pabeigts no</label>
-            <input type="date" id="date_from" name="date_from" class="form-control" value="<?php echo $filters['date_from']; ?>">
-        </div>
-        
-        <div class="filter-col">
-            <label for="date_to" class="form-label">Pabeigts līdz</label>
-            <input type="date" id="date_to" name="date_to" class="form-control" value="<?php echo $filters['date_to']; ?>">
-        </div>
-        
-        <div class="filter-col">
-            <label for="prioritate" class="form-label">Prioritāte</label>
-            <select id="prioritate" name="prioritate" class="form-control">
-                <option value="">Visas prioritātes</option>
-                <option value="Kritiska" <?php echo $filters['prioritate'] === 'Kritiska' ? 'selected' : ''; ?>>Kritiska</option>
-                <option value="Augsta" <?php echo $filters['prioritate'] === 'Augsta' ? 'selected' : ''; ?>>Augsta</option>
-                <option value="Vidēja" <?php echo $filters['prioritate'] === 'Vidēja' ? 'selected' : ''; ?>>Vidēja</option>
-                <option value="Zema" <?php echo $filters['prioritate'] === 'Zema' ? 'selected' : ''; ?>>Zema</option>
-            </select>
-        </div>
-        
-        <div class="filter-col">
-            <label for="veids" class="form-label">Uzdevuma veids</label>
-            <select id="veids" name="veids" class="form-control">
-                <option value="">Visi veidi</option>
-                <option value="Ikdienas" <?php echo $filters['veids'] === 'Ikdienas' ? 'selected' : ''; ?>>Ikdienas</option>
-                <option value="Regulārais" <?php echo $filters['veids'] === 'Regulārais' ? 'selected' : ''; ?>>Regulārais</option>
-            </select>
-        </div>
-        
-        <div class="filter-col">
-            <label for="vieta" class="form-label">Vieta</label>
-            <select id="vieta" name="vieta" class="form-control">
-                <option value="">Visas vietas</option>
-                <?php foreach ($vietas as $vieta): ?>
-                    <option value="<?php echo $vieta['id']; ?>" <?php echo $filters['vieta'] == $vieta['id'] ? 'selected' : ''; ?>>
-                        <?php echo htmlspecialchars($vieta['nosaukums']); ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        
-        <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
-            <button type="submit" class="btn btn-primary">Filtrēt</button>
-            <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
-        </div>
-    </form>
-</div>
-
-<!-- Kārtošanas kontroles -->
-<div class="sort-controls">
-    <span>Kārtot pēc:</span>
-    <button onclick="sortBy('beigu_laiks', '<?php echo $sort === 'beigu_laiks' && $order === 'DESC' ? 'ASC' : 'DESC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'beigu_laiks' ? 'active' : ''; ?>">
-        Pabeigšanas datuma <?php echo $sort === 'beigu_laiks' ? ($order === 'DESC' ? '↓' : '↑') : ''; ?>
-    </button>
-    <button onclick="sortBy('prioritate', '<?php echo $sort === 'prioritate' && $order === 'DESC' ? 'ASC' : 'DESC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'prioritate' ? 'active' : ''; ?>">
-        Prioritātes <?php echo $sort === 'prioritate' ? ($order === 'DESC' ? '↓' : '↑') : ''; ?>
-    </button>
-    <button onclick="sortBy('faktiskais_ilgums', '<?php echo $sort === 'faktiskais_ilgums' && $order === 'DESC' ? 'ASC' : 'DESC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'faktiskais_ilgums' ? 'active' : ''; ?>">
-        Ilguma <?php echo $sort === 'faktiskais_ilgums' ? ($order === 'DESC' ? '↓' : '↑') : ''; ?>
-    </button>
-</div>
-
-<!-- Pabeigto uzdevumu tabula -->
-<div class="card">
-    <div class="card-header">
-        <div class="d-flex justify-content-between align-items-center">
-            <h4>Pabeigto uzdevumu vēsture</h4>
-            <span class="text-muted">Atrasti: <?php echo $total_records; ?> uzdevumi</span>
-        </div>
-    </div>
-    <div class="card-body p-0">
+        <!-- Uzdevumu tabula -->
         <div class="table-responsive">
-            <table class="table">
+            <table class="table table-striped">
                 <thead>
                     <tr>
-                        <th>Uzdevums</th>
-                        <th>Vieta/Iekārta</th>
-                        <th>Prioritāte</th>
+                        <th>Nosaukums</th>
                         <th>Veids</th>
+                        <th>Prioritāte</th>
+                        <th>Vieta</th>
                         <th>Pabeigts</th>
-                        <th>Ilgums</th>
+                        <th>Pavadītais laiks</th>
                         <th>Darbības</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php if (empty($pabeigti_uzdevumi)): ?>
-                        <tr>
-                            <td colspan="7" class="text-center">
-                                <p>Nav atrasti pabeigti uzdevumi izvēlētajos filtros.</p>
-                                <?php if (!empty($filters['date_from']) || !empty($filters['date_to']) || !empty($filters['prioritate']) || !empty($filters['veids']) || !empty($filters['vieta']) || !empty($filters['search'])): ?>
-                                    <small class="text-muted">
-                                        Mēģiniet mainīt filtrus vai noņemt ierobežojumus.<br>
-                                        <?php if (!empty($filters['date_from']) || !empty($filters['date_to'])): ?>
-                                            Datuma filtrs: <?php echo $filters['date_from'] ?: 'nav'; ?> līdz <?php echo $filters['date_to'] ?: 'nav'; ?><br>
-                                        <?php endif; ?>
-                                        <a href="completed_tasks.php" class="btn btn-sm btn-primary mt-2">Rādīt visus pabeigtos uzdevumus</a>
-                                    </small>
-                                <?php else: ?>
-                                    <small class="text-muted">
-                                        Jums vēl nav pabeigtu uzdevumu vai tie ir ārpus pēdējo 6 mēnešu perioda.<br>
-                                        <a href="?date_from=&date_to=" class="btn btn-sm btn-primary mt-2">Rādīt visus pabeigtos uzdevumus</a>
-                                    </small>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php else: ?>
-                        <?php foreach ($pabeigti_uzdevumi as $uzdevums): ?>
+                    <?php if ($result->num_rows > 0): ?>
+                        <?php while ($task = $result->fetch_assoc()): ?>
                             <tr>
+                                <td><?php echo htmlspecialchars($task['title']); ?></td>
+                                <td><?php echo htmlspecialchars($task['type_display']); ?></td>
                                 <td>
-                                    <div>
-                                        <strong><?php echo htmlspecialchars($uzdevums['nosaukums']); ?></strong>
-                                        <?php if ($uzdevums['failu_skaits'] > 0): ?>
-                                            <span class="badge badge-info" title="Pievienoti faili">📎 <?php echo $uzdevums['failu_skaits']; ?></span>
-                                        <?php endif; ?>
-                                        <?php if ($uzdevums['periodicitate']): ?>
-                                            <span class="badge badge-secondary" title="Regulārais uzdevums"><?php echo $uzdevums['periodicitate']; ?></span>
-                                        <?php endif; ?>
-                                    </div>
-                                    <small class="text-muted">
-                                        <?php echo htmlspecialchars(substr($uzdevums['apraksts'], 0, 100)) . (strlen($uzdevums['apraksts']) > 100 ? '...' : ''); ?>
-                                    </small>
-                                </td>
-                                <td>
-                                    <div>
-                                        <?php if ($uzdevums['vietas_nosaukums']): ?>
-                                            <strong><?php echo htmlspecialchars($uzdevums['vietas_nosaukums']); ?></strong>
-                                        <?php endif; ?>
-                                        <?php if ($uzdevums['iekartas_nosaukums']): ?>
-                                            <br><small><?php echo htmlspecialchars($uzdevums['iekartas_nosaukums']); ?></small>
-                                        <?php endif; ?>
-                                        <?php if ($uzdevums['kategorijas_nosaukums']): ?>
-                                            <br><small class="text-muted"><?php echo htmlspecialchars($uzdevums['kategorijas_nosaukums']); ?></small>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
-                                <td>
-                                    <span class="priority-badge <?php echo getPriorityClass($uzdevums['prioritate']); ?>">
-                                        <?php echo $uzdevums['prioritate']; ?>
+                                    <span class="badge bg-<?php 
+                                        echo match($task['priority']) {
+                                            'critical' => 'danger',
+                                            'high' => 'warning',
+                                            'medium' => 'info',
+                                            'low' => 'secondary',
+                                            default => 'secondary'
+                                        }; 
+                                    ?>">
+                                        <?php echo htmlspecialchars($task['priority_display']); ?>
                                     </span>
                                 </td>
+                                <td><?php echo htmlspecialchars($task['location_name'] ?? 'Nav norādīta'); ?></td>
                                 <td>
-                                    <span class="task-type-badge <?php echo $uzdevums['veids'] === 'Regulārais' ? 'regular' : 'daily'; ?>">
-                                        <?php echo $uzdevums['veids']; ?>
-                                    </span>
+                                    <?php 
+                                        if ($task['completed_at']) {
+                                            echo date('d.m.Y H:i', strtotime($task['completed_at']));
+                                        } else {
+                                            echo 'Nav norādīts';
+                                        }
+                                    ?>
                                 </td>
                                 <td>
-                                    <strong><?php echo formatDate($uzdevums['beigu_laiks']); ?></strong>
-                                    <br><small class="text-muted">Sākts: <?php echo formatDate($uzdevums['sakuma_laiks']); ?></small>
+                                    <?php 
+                                        if ($task['started_at'] && $task['completed_at']) {
+                                            $start = new DateTime($task['started_at']);
+                                            $end = new DateTime($task['completed_at']);
+                                            $interval = $start->diff($end);
+                                            
+                                            $time_spent = '';
+                                            if ($interval->d > 0) $time_spent .= $interval->d . 'd ';
+                                            if ($interval->h > 0) $time_spent .= $interval->h . 'h ';
+                                            if ($interval->i > 0) $time_spent .= $interval->i . 'min';
+                                            
+                                            echo $time_spent ?: '< 1min';
+                                        } else {
+                                            echo 'Nav aprēķināts';
+                                        }
+                                    ?>
                                 </td>
                                 <td>
-                                    <div>
-                                        <?php if ($uzdevums['faktiskais_ilgums']): ?>
-                                            <strong><?php echo number_format($uzdevums['faktiskais_ilgums'], 1); ?>h</strong>
-                                        <?php endif; ?>
-                                        <?php if ($uzdevums['kopejais_darba_laiks'] && $uzdevums['kopejais_darba_laiks'] != $uzdevums['faktiskais_ilgums']): ?>
-                                            <br><small class="text-muted">Darba laiks: <?php echo number_format($uzdevums['kopejais_darba_laiks'], 1); ?>h</small>
-                                        <?php endif; ?>
-                                        <?php if ($uzdevums['paredzamais_ilgums']): ?>
-                                            <br><small class="text-muted">Paredzēts: <?php echo number_format($uzdevums['paredzamais_ilgums'], 1); ?>h</small>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
-                                <td>
-                                    <button onclick="viewTask(<?php echo $uzdevums['id']; ?>)" 
-                                            class="btn btn-sm btn-info" title="Skatīt detaļas">👁</button>
+                                    <a href="view_task.php?id=<?php echo $task['id']; ?>" class="btn btn-sm btn-primary">Skatīt</a>
+                                    <?php if (!empty($task['report'])): ?>
+                                        <a href="view_report.php?task_id=<?php echo $task['id']; ?>" class="btn btn-sm btn-info">Atskaite</a>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
-                        <?php endforeach; ?>
+                        <?php endwhile; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="7" class="text-center">Nav atrasti pabeigti uzdevumi ar norādītajiem kritērijiem</td>
+                        </tr>
                     <?php endif; ?>
                 </tbody>
             </table>
         </div>
-    </div>
-</div>
-
-<!-- Lapošana -->
-<?php if ($total_pages > 1): ?>
-    <div class="pagination">
-        <?php if ($page > 1): ?>
-            <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">&laquo; Iepriekšējā</a>
-        <?php endif; ?>
         
-        <?php
-        $start = max(1, $page - 2);
-        $end = min($total_pages, $page + 2);
-        
-        for ($i = $start; $i <= $end; $i++): ?>
-            <?php if ($i == $page): ?>
-                <span class="current"><?php echo $i; ?></span>
-            <?php else: ?>
-                <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $i])); ?>"><?php echo $i; ?></a>
-            <?php endif; ?>
-        <?php endfor; ?>
-        
-        <?php if ($page < $total_pages): ?>
-            <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">Nākamā &raquo;</a>
+        <!-- Paginācijas vieta, ja nepieciešama -->
+        <?php if ($result->num_rows > 50): ?>
+        <nav aria-label="Lappušu navigācija">
+            <ul class="pagination justify-content-center">
+                <!-- Paginācijas kods, ja nepieciešams -->
+            </ul>
+        </nav>
         <?php endif; ?>
     </div>
-<?php endif; ?>
 
-<!-- Uzdevuma skatīšanas modāls -->
-<div id="viewTaskModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 class="modal-title">Uzdevuma detaļas</h3>
-            <button onclick="closeModal('viewTaskModal')" class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body" id="taskDetails">
-            <!-- Saturs tiks ielādēts ar AJAX -->
-        </div>
-        <div class="modal-footer">
-            <button onclick="closeModal('viewTaskModal')" class="btn btn-secondary">Aizvērt</button>
-        </div>
-    </div>
-</div>
-
-<script>
-// UZLABOTS JavaScript ar automātisko filtru iesniegšanu
-
-// Inicializācija kad lapa ielādējusies
-document.addEventListener('DOMContentLoaded', function() {
-    const form = document.getElementById('filterForm');
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     
-    // Automātiskā filtru iesniegšana - visiem filtru elementiem
-    document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').forEach(element => {
-        element.addEventListener('change', function() {
-            console.log('Filter changed:', this.name, this.value); // Debug
-            form.submit();
+    <!-- JavaScript filtru automātiskai darbībai -->
+    <script>
+        // Inicializācija kad lapa ielādējusies
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('filterForm');
+            const searchInput = document.querySelector('input[name="meklēt"]');
+            
+            // Event listeners filtru elementiem - automātiska forma iesniegšana
+            document.querySelectorAll('#filterForm select, #filterForm input[type="date"]').forEach(element => {
+                element.addEventListener('change', function() {
+                    form.submit();
+                });
+            });
+            
+            // Meklēšanas lauka debounce (ar aizkavi 500ms)
+            let searchTimeout;
+            if (searchInput) {
+                searchInput.addEventListener('input', function() {
+                    clearTimeout(searchTimeout);
+                    searchTimeout = setTimeout(() => {
+                        form.submit();
+                    }, 500);
+                });
+            }
+            
+            // Filtru poga
+            const filterButton = form.querySelector('button[type="submit"]');
+            if (filterButton) {
+                filterButton.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    form.submit();
+                });
+            }
         });
-    });
-    
-    // Meklēšanas lauka debounce
-    const searchInput = document.getElementById('search');
-    let searchTimeout;
-    
-    searchInput.addEventListener('input', function() {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(() => {
-            console.log('Search triggered:', this.value); // Debug
-            form.submit();
-        }, 500); // 500ms delay
-    });
-});
 
-// Uzdevuma detaļu skatīšana
-function viewTask(taskId) {
-    fetch(`ajax/get_task_details.php?id=${taskId}`)
-        .then(response => response.text())
-        .then(html => {
-            document.getElementById('taskDetails').innerHTML = html;
-            openModal('viewTaskModal');
-        })
-        .catch(error => {
-            console.error('Kļūda:', error);
-            alert('Kļūda ielādējot uzdevuma detaļas');
-        });
-}
-
-// Kārtošanas funkcija
-function sortBy(column, direction) {
-    const url = new URL(window.location);
-    url.searchParams.set('sort', column);
-    url.searchParams.set('order', direction);
-    // Saglabāt esošos filtrus
-    const form = document.getElementById('filterForm');
-    const formData = new FormData(form);
-    for (let [key, value] of formData.entries()) {
-        if (value) {
-            url.searchParams.set(key, value);
+        // Uzdevuma detaļu skatīšana
+        function viewTask(taskId) {
+            fetch(`ajax/get_task_details.php?id=${taskId}`)
+                .then(response => response.text())
+                .then(html => {
+                    document.getElementById('taskDetails').innerHTML = html;
+                    openModal('viewTaskModal');
+                })
+                .catch(error => {
+                    console.error('Kļūda:', error);
+                    alert('Kļūda ielādējot uzdevuma detaļas');
+                });
         }
-    }
-    window.location = url;
-}
 
-// Filtru notīrīšana
-function clearFilters() {
-    window.location.href = 'completed_tasks.php';
-}
+        // Kārtošanas funkcija
+        function sortBy(column, direction) {
+            const url = new URL(window.location);
+            url.searchParams.set('sort', column);
+            url.searchParams.set('order', direction);
+            
+            // Saglabāt esošos filtrus
+            const form = document.getElementById('filterForm');
+            if (form) {
+                const formData = new FormData(form);
+                for (let [key, value] of formData.entries()) {
+                    if (value && key !== 'sort' && key !== 'order') {
+                        url.searchParams.set(key, value);
+                    }
+                }
+            }
+            window.location = url;
+        }
 
-// Ātrā datuma iestatīšana
-function setDateRange(days) {
-    const today = new Date();
-    const pastDate = new Date(today.getTime() - (days * 24 * 60 * 60 * 1000));
-    
-    document.getElementById('date_from').value = pastDate.toISOString().split('T')[0];
-    document.getElementById('date_to').value = today.toISOString().split('T')[0];
-    
-    // Automātiski iesniegšana pēc datuma iestatīšanas
-    document.getElementById('filterForm').submit();
-}
-
-// Pievienot ātrās pogas pēc lapas ielādes
-document.addEventListener('DOMContentLoaded', function() {
-    const quickDateButtons = document.createElement('div');
-    quickDateButtons.className = 'mb-2 text-center';
-    quickDateButtons.innerHTML = `
-        <small class="text-muted">Ātrie filtri: </small>
-        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(7)">Pēdējās 7 dienas</button>
-        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(30)">Pēdējās 30 dienas</button>
-        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDateRange(90)">Pēdējās 90 dienas</button>
-        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Visi uzdevumi</button>
-    `;
-    
-    const form = document.querySelector('.filter-bar');
-    form.parentNode.insertBefore(quickDateButtons, form);
-});
-</script>
-
-<style>
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-lg);
-}
-
-.badge {
-    display: inline-block;
-    padding: 2px 6px;
-    font-size: 11px;
-    border-radius: 3px;
-    margin-left: 5px;
-}
-
-.badge-info {
-    background: var(--info-color);
-    color: white;
-}
-
-.badge-secondary {
-    background: var(--secondary-color);
-    color: white;
-}
-
-.task-type-badge {
-    display: inline-block;
-    padding: 3px 8px;
-    border-radius: var(--border-radius);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--white);
-}
-
-.task-type-badge.daily {
-    background: var(--info-color);
-}
-
-.task-type-badge.regular {
-    background: var(--secondary-color);
-}
-
-/* Uzlabots responsīvais dizains */
-@media (max-width: 768px) {
-    .stats-grid {
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    }
-    
-    .table-responsive {
-        font-size: var(--font-size-sm);
-    }
-    
-    .filter-row {
-        flex-direction: column;
-        gap: var(--spacing-sm);
-    }
-    
-    .filter-col {
-        width: 100%;
-    }
-}
-
-/* Ātrās pogas stils */
-.btn-sm {
-    margin: 2px;
-    padding: 4px 8px;
-    font-size: 12px;
-}
-
-/* Uzlabots formas stils */
-.filter-bar {
-    background: var(--white);
-    padding: var(--spacing-md);
-    border-radius: var(--border-radius);
-    margin-bottom: var(--spacing-lg);
-    box-shadow: var(--shadow-sm);
-}
-
-.filter-row {
-    display: flex;
-    gap: var(--spacing-md);
-    flex-wrap: wrap;
-    align-items: end;
-}
-
-.filter-col {
-    flex: 1;
-    min-width: 200px;
-}
-
-.sort-controls {
-    display: flex;
-    gap: var(--spacing-sm);
-    align-items: center;
-    margin-bottom: var(--spacing-md);
-}
-
-.sort-btn {
-    background: var(--gray-200);
-    border: none;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--border-radius);
-    cursor: pointer;
-    transition: all 0.3s ease;
-}
-
-.sort-btn:hover,
-.sort-btn.active {
-    background: var(--secondary-color);
-    color: var(--white);
-}
-</style>
-
-<?php include 'includes/footer.php'; ?>
+        // Filtru notīrīšana
+        function clearFilters() {
+            window.location.href = 'completed_tasks.php';
+        }
+    </script>
+</body>
+</html>
