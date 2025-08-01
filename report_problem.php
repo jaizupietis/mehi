@@ -140,7 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $pdo->commit();
             
-            setFlashMessage('success', 'Problēma veiksmīgi ziņota!');
+            setFlashMessage('success', 'Problēma veiksmīgi ziņota!');        
             redirect('my_problems.php');
             
         } catch (PDOException $e) {

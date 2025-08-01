@@ -189,13 +189,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// UZLABOTI Filtrēšanas parametri - ar pareiziem nosaukumiem
+// Filtrēšanas parametri
 $filters = [
-    'veids' => sanitizeInput($_GET['veids'] ?? ''),        // Mainīts no 'task_type' uz 'veids'
+    'veids' => sanitizeInput($_GET['veids'] ?? ''),
     'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
     'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
     'vieta' => intval($_GET['vieta'] ?? 0),
-    'search' => sanitizeInput($_GET['search'] ?? ''),      // Pievienots meklēšanas filtrs
+    'search' => sanitizeInput($_GET['search'] ?? ''),
     'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
 ];
 
@@ -217,7 +217,7 @@ try {
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
     
-    // UZLABOTS Būvēt vaicājumu - ar pareizu WHERE klauzulas veidošanu
+    // Būvēt vaicājumu
     $where_conditions = ["u.piešķirts_id = ?"];
     $params = [$currentUser['id']];
     
@@ -373,7 +373,7 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- UZLABOTA Filtru josla - ar pareiziem name atribūtiem -->
+<!-- Filtru josla -->
 <div class="filter-bar">
     <form method="GET" id="filterForm" class="filter-row">
         <!-- Meklēšanas lauks -->
@@ -384,7 +384,7 @@ include 'includes/header.php';
                    value="<?php echo htmlspecialchars($filters['search']); ?>">
         </div>
         
-        <!-- Uzdevuma veids - LABOTS name atribūts -->
+        <!-- Uzdevuma veids -->
         <div class="filter-col">
             <label for="veids" class="form-label">Uzdevuma veids</label>
             <select id="veids" name="veids" class="form-control">
@@ -629,31 +629,34 @@ include 'includes/header.php';
 </div>
 
 <script>
-// UZLABOTS JavaScript ar automātisko filtru iesniegšanu
+// JavaScript ar labotiem event listeneriem
 
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     const form = document.getElementById('filterForm');
     
-    // Automātiskā filtru iesniegšana - select laukiem
+    // Event listeners filtru elementiem - automātiska forma iesniegšana
+    // Tikai select un checkbox elementiem
     document.querySelectorAll('#filterForm select, #filterForm input[type="checkbox"]').forEach(element => {
         element.addEventListener('change', function() {
-            console.log('Filter changed:', this.name, this.value); // Debug
+            console.log('Filter changed:', this.name, this.value, this.checked); // Debug
             form.submit();
         });
     });
     
-    // Meklēšanas lauka debounce - tikai input[type="text"]
+    // Meklēšanas lauka debounce
     const searchInput = document.getElementById('search');
     let searchTimeout;
     
-    searchInput.addEventListener('input', function() {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(() => {
-            console.log('Search triggered:', this.value); // Debug
-            form.submit();
-        }, 500); // 500ms delay
-    });
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                console.log('Search triggered:', this.value); // Debug
+                form.submit();
+            }, 500); // 500ms delay
+        });
+    }
 });
 
 // Darba sākšana
@@ -732,7 +735,7 @@ function sortBy(column, direction) {
     const form = document.getElementById('filterForm');
     const formData = new FormData(form);
     for (let [key, value] of formData.entries()) {
-        if (value) {
+        if (value && key !== 'sort' && key !== 'order') {
             url.searchParams.set(key, value);
         }
     }

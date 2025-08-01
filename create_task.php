@@ -437,6 +437,39 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Inicializācija kad lapa ielādējusies
+document.addEventListener('DOMContentLoaded', function() {
+    updateIekartas();
+    
+    // Form validation
+    const taskForm = document.getElementById('taskForm');
+    if (taskForm) {
+        taskForm.addEventListener('submit', function(e) {
+            const nosaukums = document.getElementById('nosaukums').value.trim();
+            const apraksts = document.getElementById('apraksts').value.trim();
+            const piešķirts = document.getElementById('piešķirts_id').value;
+            
+            if (!nosaukums || !apraksts || !piešķirts) {
+                e.preventDefault();
+                alert('Lūdzu aizpildiet visus obligātos laukus.');
+                return;
+            }
+            
+            // Pārbaudīt failu izmēru
+            const fileInput = document.getElementById('faili');
+            if (fileInput.files.length > 0) {
+                for (let i = 0; i < fileInput.files.length; i++) {
+                    if (fileInput.files[i].size > <?php echo MAX_FILE_SIZE; ?>) {
+                        e.preventDefault();
+                        alert('Fails "' + fileInput.files[i].name + '" ir pārāk liels. Maksimālais izmērs: <?php echo round(MAX_FILE_SIZE / 1024 / 1024); ?>MB');
+                        return;
+                    }
+                }
+            }
+        });
+    }
+});
+
 // Iekartu filtrēšana pēc vietas
 function updateIekartas() {
     const vietasSelect = document.getElementById('vietas_id');
@@ -467,36 +500,6 @@ function updateIekartas() {
         }
     }
 }
-
-// Inicializēt iekartu filtrēšanu
-document.addEventListener('DOMContentLoaded', function() {
-    updateIekartas();
-});
-
-// Formas validācija
-document.getElementById('taskForm').addEventListener('submit', function(e) {
-    const nosaukums = document.getElementById('nosaukums').value.trim();
-    const apraksts = document.getElementById('apraksts').value.trim();
-    const piešķirts = document.getElementById('piešķirts_id').value;
-    
-    if (!nosaukums || !apraksts || !piešķirts) {
-        e.preventDefault();
-        alert('Lūdzu aizpildiet visus obligātos laukus.');
-        return;
-    }
-    
-    // Pārbaudīt failu izmēru
-    const fileInput = document.getElementById('faili');
-    if (fileInput.files.length > 0) {
-        for (let i = 0; i < fileInput.files.length; i++) {
-            if (fileInput.files[i].size > <?php echo MAX_FILE_SIZE; ?>) {
-                e.preventDefault();
-                alert('Fails "' + fileInput.files[i].name + '" ir pārāk liels. Maksimālais izmērs: <?php echo round(MAX_FILE_SIZE / 1024 / 1024); ?>MB');
-                return;
-            }
-        }
-    }
-});
 </script>
 
 <style>

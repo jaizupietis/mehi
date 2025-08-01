@@ -563,6 +563,37 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Inicializācija kad lapa ielādējusies
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('filterForm');
+    const searchInput = document.getElementById('meklēt');
+    
+    // Event listeners filtru elementiem
+    document.querySelectorAll('#filterForm select').forEach(element => {
+        element.addEventListener('change', function() {
+            form.submit();
+        });
+    });
+    
+    // Meklēšanas lauka debounce
+    let searchTimeout;
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            form.submit();
+        }, 500);
+    });
+    
+    // Filtru poga
+    const filterButton = form.querySelector('button[type="submit"]');
+    if (filterButton) {
+        filterButton.addEventListener('click', function(e) {
+            e.preventDefault();
+            form.submit();
+        });
+    }
+});
+
 // Lietotāja rediģēšana
 function editUser(user) {
     document.getElementById('edit_user_id').value = user.id;
@@ -600,23 +631,10 @@ function deleteUser(userId) {
     form.submit();
 }
 
-// Filtru automātiska iesniegšana
-document.querySelectorAll('#filterForm select, #filterForm input').forEach(element => {
-    element.addEventListener('change', function() {
-        if (this.type !== 'text') {
-            document.getElementById('filterForm').submit();
-        }
-    });
-});
-
-// Meklēšanas lauka debounce
-let searchTimeout;
-document.getElementById('meklēt').addEventListener('input', function() {
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => {
-        document.getElementById('filterForm').submit();
-    }, 500);
-});
+// Filtru notīrīšana
+function clearFilters() {
+    window.location.href = 'users.php';
+}
 </script>
 
 <style>

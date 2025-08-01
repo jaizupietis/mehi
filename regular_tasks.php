@@ -101,23 +101,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    if ($action === 'delete_template' && isset($_POST['template_id'])) {
+if ($action === 'delete_template' && isset($_POST['template_id'])) {
         $template_id = intval($_POST['template_id']);
+        $force_delete = isset($_POST['force_delete']) ? true : false;
         
         try {
+            $pdo->beginTransaction();
+            
             // Pārbaudīt vai ir izveidoti uzdevumi no šī šablona
             $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE regulara_uzdevuma_id = ?");
             $stmt->execute([$template_id]);
             $usage_count = $stmt->fetchColumn();
             
-            if ($usage_count > 0) {
-                $errors[] = "Nevar dzēst šablonu, no kura ir izveidoti uzdevumi. Deaktivizējiet to.";
+            if ($usage_count > 0 && !$force_delete) {
+                $errors[] = "Nevar dzēst šablonu, no kura ir izveidoti $usage_count uzdevumi. Izmantojiet 'Piespiedu dzēšana' vai deaktivizējiet šablonu.";
             } else {
+                if ($force_delete && $usage_count > 0) {
+                    // Dzēst visus saistītos uzdevumus un to datus
+                    $stmt = $pdo->prepare("
+                        DELETE FROM darba_laiks 
+                        WHERE uzdevuma_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
+                    ");
+                    $stmt->execute([$template_id]);
+                    
+                    $stmt = $pdo->prepare("
+                        DELETE FROM uzdevumu_vesture 
+                        WHERE uzdevuma_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
+                    ");
+                    $stmt->execute([$template_id]);
+                    
+                    $stmt = $pdo->prepare("
+                        DELETE FROM faili 
+                        WHERE tips = 'Uzdevums' AND saistitas_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
+                    ");
+                    $stmt->execute([$template_id]);
+                    
+                    $stmt = $pdo->prepare("DELETE FROM uzdevumi WHERE regulara_uzdevuma_id = ?");
+                    $stmt->execute([$template_id]);
+                }
+                
                 $stmt = $pdo->prepare("DELETE FROM regularo_uzdevumu_sabloni WHERE id = ?");
                 $stmt->execute([$template_id]);
-                setFlashMessage('success', 'Regulārais uzdevums dzēsts!');
+                
+                $pdo->commit();
+                setFlashMessage('success', $force_delete && $usage_count > 0 ? 
+                    "Regulārais uzdevums un visi saistītie uzdevumi ($usage_count gab.) dzēsti!" : 
+                    'Regulārais uzdevums dzēsts!');
             }
         } catch (PDOException $e) {
+            $pdo->rollBack();
             $errors[] = "Kļūda dzēšot uzdevumu: " . $e->getMessage();
         }
     }

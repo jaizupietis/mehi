@@ -524,6 +524,37 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Inicializācija kad lapa ielādējusies
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('filterForm');
+    const searchInput = document.getElementById('meklēt');
+    
+    // Event listeners filtru elementiem (bez meklēšanas lauka)
+    document.querySelectorAll('#filterForm select').forEach(element => {
+        element.addEventListener('change', function() {
+            form.submit();
+        });
+    });
+    
+    // Meklēšanas lauka debounce
+    let searchTimeout;
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            form.submit();
+        }, 500);
+    });
+    
+    // Filtru poga
+    const filterButton = form.querySelector('button[type="submit"]');
+    if (filterButton) {
+        filterButton.addEventListener('click', function(e) {
+            e.preventDefault();
+            form.submit();
+        });
+    }
+});
+
 // Uzdevuma detaļu skatīšana
 function viewTask(taskId) {
     fetch(`ajax/get_task_details.php?id=${taskId}`)
@@ -569,6 +600,26 @@ function deleteTask(taskId) {
     form.submit();
 }
 
+// Kārtošanas funkcija
+function sortBy(column, direction) {
+    const url = new URL(window.location);
+    url.searchParams.set('sort', column);
+    url.searchParams.set('order', direction);
+    // Saglabāt esošos filtrus
+    const form = document.getElementById('filterForm');
+    const formData = new FormData(form);
+    for (let [key, value] of formData.entries()) {
+        if (value) {
+            url.searchParams.set(key, value);
+        }
+    }
+    window.location = url;
+}
+
+// Filtru notīrīšana
+function clearFilters() {
+    window.location.href = 'tasks.php';
+}
 // Filtru automātiska iesniegšana
 document.querySelectorAll('#filterForm select, #filterForm input').forEach(element => {
     element.addEventListener('change', function() {

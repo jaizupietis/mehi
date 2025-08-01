@@ -649,6 +649,12 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Inicializācija kad lapa ielādējusies
+document.addEventListener('DOMContentLoaded', function() {
+    // Pirmais tab pēc noklusējuma
+    showTab('vietas');
+});
+
 // Ciļņu pārslēgšana
 function showTab(tabName) {
     // Paslēpt visus ciļņu saturus
