@@ -12,9 +12,44 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo isset($pageTitle) ? getPageTitle($pageTitle) : getPageTitle(); ?></title>
+
+	 <!-- PWA Meta tags -->
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="AVOTI TMS">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json">
+    
+    <!-- Favicons and PWA Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/assets/images/icon-192x192.png">
+    <link rel="apple-touch-icon" href="/assets/images/icon-192x192.png">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="assets/css/style.css">
+    
+    <!-- Push Notifications JavaScript -->
+    <script src="assets/js/push-notifications.js" defer></script>
+
     <link rel="stylesheet" href="assets/css/style.css">
     <meta name="description" content="AVOTI uzdevumu pārvaldības sistēma">
     <meta name="robots" content="noindex, nofollow">
+
+	 <script>
+        // Service Worker reģistrācija
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(function(registration) {
+                        console.log('ServiceWorker registration successful');
+                    })
+                    .catch(function(err) {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
 </head>
 <body>
     <header>

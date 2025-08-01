@@ -63,7 +63,7 @@ define('PRIORITY_CRITICAL', 'Kritiska');
 // VAPID Keys for Push Notifications
 // Ģenerējiet jaunas atslēgas: https://vapidkeys.com/
 define('VAPID_PUBLIC_KEY', 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEO49OB0qvXJ1VN3PFNKO8bBS2AnpNp8fJnVrDRZataNi_0RB-xv0L1U5IIhgIXu-5DPKZFilUAaNo-xftVDRkPQ');
-define('VAPID_PRIVATE_KEY', '');
+define('VAPID_PRIVATE_KEY', 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyLX1eH7pi5-GDduSGyh-CNrXHHp8OpQsUquFsEP7HXOhRANCAAQ7j04HSq9cnVU3c8U0o7xsFLYCek2nx8mdWsNFlq1o2L_REH7G_QvVTkgiGAhe77kM8pkWKVQBo2j7F-1UNGQ9');
 define('VAPID_CONTACT', 'mailto:janis.aizupietis@avoti.lv');
 
 // Push Notifications iestatījumi
@@ -101,6 +101,24 @@ class Database {
 // Globālā datubāzes pieslēgšana
 $db = new Database();
 $pdo = $db->getConnection();
+
+// Initialize push notification manager
+$pushNotificationManager = null;
+if (defined('PUSH_NOTIFICATIONS_ENABLED') && PUSH_NOTIFICATIONS_ENABLED && isset($pdo)) {
+    try {
+        require_once __DIR__ . '/includes/push_notifications.php';
+        $pushNotificationManager = new PushNotificationManager($pdo);
+        
+        // Pārbaudīt vai manager tika izveidots
+        if ($pushNotificationManager) {
+            // Definēt globālu mainīgo, lai būtu pieejams visur
+            $GLOBALS['pushNotificationManager'] = $pushNotificationManager;
+        }
+    } catch (Exception $e) {
+        error_log("Push Notification Manager initialization failed: " . $e->getMessage());
+        $pushNotificationManager = null;
+    }
+}
 
 // Palīgfunkcijas
 function getCurrentUser() {
@@ -314,4 +332,6 @@ function uploadFile($file, $targetDir = UPLOAD_DIR) {
         'faila_izmers' => $file['size']
     ];
 }
+
 ?>
+
