@@ -244,28 +244,36 @@ include 'includes/header.php';
                             <?php
                             $linkText = '';
                             $linkUrl = '';
+                            unset($linkOnclick); // Notīrīt iepriekšējo vērtību
                             
                             if ($pazinojums['saistitas_tips'] === 'Uzdevums') {
                                 $linkText = 'Skatīt uzdevumu';
                                 if (hasRole([ROLE_ADMIN, ROLE_MANAGER])) {
-                                    $linkUrl = 'tasks.php';
+                                    $linkUrl = 'tasks.php?task_id=' . $pazinojums['saistitas_id'];
                                 } elseif (hasRole(ROLE_MECHANIC)) {
-                                    $linkUrl = 'my_tasks.php';
+                                    $linkUrl = '#';
+                                    $linkOnclick = "viewTaskFromNotification(" . $pazinojums['saistitas_id'] . ", " . $pazinojums['id'] . ")";
                                 }
                             } elseif ($pazinojums['saistitas_tips'] === 'Problēma') {
                                 $linkText = 'Skatīt problēmu';
                                 if (hasRole([ROLE_ADMIN, ROLE_MANAGER])) {
-                                    $linkUrl = 'problems.php';
+                                    $linkUrl = 'problems.php?problem_id=' . $pazinojums['saistitas_id'];
                                 } elseif (hasRole(ROLE_OPERATOR)) {
-                                    $linkUrl = 'my_problems.php';
+                                    $linkUrl = 'my_problems.php?problem_id=' . $pazinojums['saistitas_id'];
                                 }
                             }
                             ?>
                             
                             <?php if ($linkUrl): ?>
-                                <a href="<?php echo $linkUrl; ?>" class="btn btn-sm btn-primary">
-                                    <?php echo $linkText; ?>
-                                </a>
+                                <?php if (isset($linkOnclick)): ?>
+                                    <button onclick="viewTaskFromNotification(<?php echo $pazinojums['saistitas_id']; ?>, <?php echo $pazinojums['id']; ?>)" class="btn btn-sm btn-primary">
+                                        <?php echo $linkText; ?>
+                                    </button>
+                                <?php else: ?>
+                                    <a href="<?php echo $linkUrl; ?>" onclick="markAsReadBeforeRedirect(<?php echo $pazinojums['id']; ?>)" class="btn btn-sm btn-primary">
+                                        <?php echo $linkText; ?>
+                                    </a>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
@@ -300,7 +308,302 @@ include 'includes/header.php';
     </div>
 <?php endif; ?>
 
+<!-- Uzdevuma detaļu modāls -->
+<div id="taskDetailsModal" class="modal">
+    <div class="modal-content" style="max-width: 800px;">
+        <div class="modal-header">
+            <h3 class="modal-title">Uzdevuma detaļas</h3>
+            <button onclick="closeModal('taskDetailsModal')" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="taskDetailsContent">
+            <!-- Saturs tiks ielādēts ar AJAX -->
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeModal('taskDetailsModal')" class="btn btn-secondary">Aizvērt</button>
+            <button id="goToTaskBtn" onclick="goToMyTasks()" class="btn btn-primary" style="display: none;">Iet uz Mani uzdevumi</button>
+        </div>
+    </div>
+</div>
+
 <script>
+// Atvērt modālu
+function openModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'block';
+        modal.classList.add('show');
+        document.body.style.overflow = 'hidden'; // Novērst fona skrollēšanu
+        
+        // Fokuss uz modālu (accessibility)
+        modal.setAttribute('tabindex', '-1');
+        modal.focus();
+        
+        // ESC taustiņa apstrāde
+        document.addEventListener('keydown', handleModalEscape);
+        
+        // Klikšķis uz fona, lai aizvērtu
+        modal.addEventListener('click', handleModalBackdropClick);
+    }
+}
+
+// Aizvērt modālu
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.classList.remove('show');
+        
+        // Animācijas beigās paslēpt modālu
+        setTimeout(() => {
+            modal.style.display = 'none';
+            document.body.style.overflow = ''; // Atjaunot fona skrollēšanu
+            
+            // Notīrīt event listeners
+            document.removeEventListener('keydown', handleModalEscape);
+            modal.removeEventListener('click', handleModalBackdropClick);
+        }, 300);
+    }
+}
+
+// ESC taustiņa apstrāde
+function handleModalEscape(event) {
+    if (event.key === 'Escape') {
+        // Atrast atvērto modālu
+        const openModal = document.querySelector('.modal.show');
+        if (openModal) {
+            closeModal(openModal.id);
+        }
+    }
+}
+
+// Klikšķis uz fona
+function handleModalBackdropClick(event) {
+    if (event.target === event.currentTarget) {
+        closeModal(event.target.id);
+    }
+}
+
+// Skatīt uzdevumu no paziņojuma (mehāniķiem) un automātiski atzīmēt kā lasītu
+function viewTaskFromNotification(taskId, notificationId) {
+    // Uzreiz atzīmēt paziņojumu kā lasītu
+    if (notificationId) {
+        markAsReadSilently(notificationId);
+    }
+    
+    // Rādīt loading ziņojumu
+    document.getElementById('taskDetailsContent').innerHTML = `
+        <div style="text-align: center; padding: 40px;">
+            <div style="font-size: 18px; margin-bottom: 10px;">Ielādē uzdevuma detaļas...</div>
+            <div style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto;"></div>
+        </div>
+        <style>
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        </style>
+    `;
+    
+    // Atvērt modālu uzreiz ar loading
+    openModal('taskDetailsModal');
+    
+    // Ielādēt uzdevuma detaļas
+    fetch(`ajax/get_task_details.php?id=${taskId}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text();
+        })
+        .then(html => {
+            document.getElementById('taskDetailsContent').innerHTML = html;
+            document.getElementById('goToTaskBtn').style.display = 'inline-block';
+            
+            // Ja modāls nav redzams, atvērt to
+            const modal = document.getElementById('taskDetailsModal');
+            if (!modal.classList.contains('show')) {
+                openModal('taskDetailsModal');
+            }
+        })
+        .catch(error => {
+            console.error('Kļūda:', error);
+            document.getElementById('taskDetailsContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #e74c3c;">
+                    <div style="font-size: 48px; margin-bottom: 20px;">⚠️</div>
+                    <h4>Kļūda ielādējot uzdevuma detaļas</h4>
+                    <p>Lūdzu, mēģiniet vēlreiz vai sazinieties ar administratoru.</p>
+                    <button onclick="viewTaskFromNotification(${taskId}, ${notificationId})" class="btn btn-primary" style="margin-top: 15px;">
+                        Mēģināt vēlreiz
+                    </button>
+                </div>
+            `;
+        });
+}
+
+// Atzīmēt paziņojumu kā lasītu bez lapas pārlādēšanas
+function markAsReadSilently(notificationId) {
+    fetch('notifications.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `action=mark_read&notification_id=${notificationId}`
+    })
+    .then(response => {
+        if (response.ok) {
+            // Atjaunot UI - paziņojuma kartīti padarīt par lasītu
+            updateNotificationVisually(notificationId, true);
+            // Atjaunot statistiku
+            updateNotificationStats(-1); // -1 nelasītais
+        }
+    })
+    .catch(error => {
+        console.error('Kļūda atzīmējot paziņojumu:', error);
+    });
+}
+
+// Atzīmēt kā lasītu pirms redirect (administratoriem/operatoriem)
+function markAsReadBeforeRedirect(notificationId) {
+    // Atzīmēt kā lasītu
+    markAsReadSilently(notificationId);
+    
+    // Īsa pauze, lai POST pieprasījums pagūtu izpildīties
+    setTimeout(() => {
+        // Redirect tiks veikts automātiski, jo onclick notiek uz <a> elementa
+    }, 100);
+}
+
+// Atjaunot paziņojuma vizuālo stāvokli
+function updateNotificationVisually(notificationId, isRead) {
+    // Atrast paziņojuma kartīti
+    const notificationCards = document.querySelectorAll('.notification-card');
+    
+    notificationCards.forEach(card => {
+        // Pārbaudīt vai šī ir pareizā kartīte (pēc pogu onclick atribūtiem)
+        const readButton = card.querySelector(`button[onclick*="markAsRead(${notificationId})"]`);
+        const taskButton = card.querySelector(`button[onclick*="${notificationId}"]`);
+        
+        if (readButton || taskButton) {
+            if (isRead) {
+                // Pievienot īsu animāciju
+                card.style.transition = 'all 0.5s ease';
+                
+                // Padarīt par lasītu
+                card.classList.remove('unread');
+                card.classList.add('read');
+                
+                // Noņemt "Atzīmēt kā lasītu" pogu
+                if (readButton) {
+                    readButton.style.opacity = '0';
+                    setTimeout(() => {
+                        readButton.remove();
+                    }, 300);
+                }
+                
+                // Parādīt īsu success feedback
+                showMiniToast('✓ Paziņojums atzīmēts kā lasīts', 'success');
+                
+            } else {
+                // Padarīt par nelasītu
+                card.classList.remove('read');
+                card.classList.add('unread');
+            }
+        }
+    });
+}
+
+// Parādīt īsu toast paziņojumu
+function showMiniToast(message, type = 'info') {
+    // Izveidot toast elementu
+    const toast = document.createElement('div');
+    toast.className = `mini-toast mini-toast-${type}`;
+    toast.textContent = message;
+    
+    // Pielāgot stilu atkarībā no ekrāna izmēra
+    const isMobile = window.innerWidth <= 480;
+    
+    // Pievienot stilīgo
+    toast.style.cssText = `
+        position: fixed;
+        ${isMobile ? 'top: 10px; left: 10px; right: 10px;' : 'top: 20px; right: 20px;'}
+        background: ${type === 'success' ? '#27ae60' : '#3498db'};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        transform: ${isMobile ? 'translateY(-100%)' : 'translateX(100%)'};
+        transition: transform 0.3s ease;
+        text-align: center;
+    `;
+    
+    // Pievienot DOM
+    document.body.appendChild(toast);
+    
+    // Animācija: iebraukt
+    setTimeout(() => {
+        toast.style.transform = isMobile ? 'translateY(0)' : 'translateX(0)';
+    }, 10);
+    
+    // Animācija: izbraukt un dzēst
+    setTimeout(() => {
+        toast.style.transform = isMobile ? 'translateY(-100%)' : 'translateX(100%)';
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 300);
+    }, 2500);
+}
+
+// Atjaunot statistikas skaitļus
+function updateNotificationStats(unreadChange) {
+    const unreadStat = document.querySelector('.stat-item.unread');
+    const readStat = document.querySelector('.stat-item.read');
+    
+    if (unreadStat && readStat) {
+        // Iegūt pašreizējos skaitļus
+        const unreadText = unreadStat.textContent;
+        const readText = readStat.textContent;
+        
+        const currentUnread = parseInt(unreadText.match(/\d+/)[0]);
+        const currentRead = parseInt(readText.match(/\d+/)[0]);
+        
+        // Atjaunot skaitļus
+        const newUnread = Math.max(0, currentUnread + unreadChange);
+        const newRead = currentRead - unreadChange;
+        
+        unreadStat.textContent = `Nelasīti: ${newUnread}`;
+        readStat.textContent = `Lasīti: ${newRead}`;
+        
+        // Atjaunot pogu redzamību
+        const markAllButton = document.querySelector('button[onclick="markAllRead()"]');
+        const deleteReadButton = document.querySelector('button[onclick*="deleteAllRead"]');
+        
+        if (markAllButton) {
+            markAllButton.style.display = newUnread === 0 ? 'none' : 'inline-block';
+        }
+        
+        if (deleteReadButton) {
+            deleteReadButton.style.display = newRead === 0 ? 'none' : 'inline-block';
+        }
+        
+        // Ja nav ne nelasītu, ne lasītu, paslēpt visu actions bloku
+        const actionsDiv = document.querySelector('.actions');
+        if (actionsDiv && newUnread === 0 && newRead === 0) {
+            actionsDiv.style.display = 'none';
+        } else if (actionsDiv) {
+            actionsDiv.style.display = 'flex';
+        }
+    }
+}
+
+// Iet uz "Mani uzdevumi" lapu
+function goToMyTasks() {
+    window.location.href = 'my_tasks.php';
+}
+
 // Atzīmēt kā lasītu
 function markAsRead(notificationId) {
     const form = document.createElement('form');
@@ -385,12 +688,58 @@ function deleteAllRead() {
     form.submit();
 }
 
-// Filtru automātiska iesniegšana
-document.querySelectorAll('#filterForm select').forEach(element => {
-    element.addEventListener('change', function() {
-        document.getElementById('filterForm').submit();
+// Palīgfunkcija apstiprinājuma dialogiem
+function confirmAction(message, callback) {
+    if (confirm(message)) {
+        callback();
+    }
+}
+
+// Filtru notīrīšana
+function clearFilters() {
+    window.location.href = 'notifications.php';
+}
+
+// Inicializēt modālu sistēmu, kad lapa ielādējas
+document.addEventListener('DOMContentLoaded', function() {
+    // Pievienot filtru automātisko iesniegšanu
+    document.querySelectorAll('#filterForm select').forEach(element => {
+        element.addEventListener('change', function() {
+            document.getElementById('filterForm').submit();
+        });
     });
+    
+    // Pārbaudīt vai eksistē nepieciešamie modāli
+    const taskModal = document.getElementById('taskDetailsModal');
+    
+    if (!taskModal) {
+        console.warn('Uzdevuma modāls nav atrasts - pārbaudiet HTML struktūru');
+    }
+    
+    // Responsīvs modāla izmēru pielāgojums
+    adjustModalSize();
 });
+
+// Responsīvs modāla izmēru pielāgojums
+function adjustModalSize() {
+    const modals = document.querySelectorAll('.modal-content');
+    modals.forEach(modal => {
+        const windowHeight = window.innerHeight;
+        const windowWidth = window.innerWidth;
+        
+        // Mobilajām ierīcēm
+        if (windowWidth <= 768) {
+            modal.style.maxHeight = '95vh';
+            modal.style.width = '95%';
+        } else {
+            modal.style.maxHeight = '90vh';
+            modal.style.width = '90%';
+        }
+    });
+}
+
+// Pielāgot modāla izmērus, kad mainās loga izmērs
+window.addEventListener('resize', adjustModalSize);
 
 // Auto-refresh paziņojumu skaitītāja
 setInterval(function() {
@@ -451,22 +800,31 @@ setInterval(function() {
     border-radius: var(--border-radius-lg);
     box-shadow: var(--shadow-md);
     overflow: hidden;
-    transition: all 0.3s ease;
+    transition: all 0.5s ease;
     border-left: 4px solid var(--gray-400);
 }
 
 .notification-card.unread {
     border-left-color: var(--secondary-color);
     background: linear-gradient(135deg, var(--white) 0%, rgba(52, 152, 219, 0.02) 100%);
+    transform: scale(1.00);
 }
 
 .notification-card.read {
     opacity: 0.8;
+    transform: scale(0.99);
+    border-left-color: var(--success-color);
+    background: linear-gradient(135deg, var(--white) 0%, rgba(39, 174, 96, 0.02) 100%);
 }
 
 .notification-card:hover {
-    transform: translateY(-1px);
+    transform: translateY(-1px) scale(1.005);
     box-shadow: var(--shadow-lg);
+}
+
+.notification-card.read:hover {
+    transform: translateY(-1px) scale(1.005);
+    opacity: 0.9;
 }
 
 .notification-header {
@@ -546,6 +904,116 @@ setInterval(function() {
     padding-top: var(--spacing-md);
 }
 
+/* Uzlabotie modāla stili */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 9999;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    overflow-y: auto;
+    padding: 20px 0;
+}
+
+.modal-content {
+    background-color: var(--white);
+    margin: auto;
+    border-radius: var(--border-radius-lg);
+    box-shadow: var(--shadow-xl);
+    width: 90%;
+    max-width: 800px;
+    max-height: 90vh;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    padding: var(--spacing-lg);
+    background: var(--gray-100);
+    border-bottom: 1px solid var(--gray-300);
+    border-radius: var(--border-radius-lg) var(--border-radius-lg) 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.modal-body {
+    padding: var(--spacing-lg);
+    overflow-y: auto;
+    flex-grow: 1;
+    max-height: calc(90vh - 120px);
+}
+
+.modal-footer {
+    padding: var(--spacing-lg);
+    background: var(--gray-100);
+    border-top: 1px solid var(--gray-300);
+    border-radius: 0 0 var(--border-radius-lg) var(--border-radius-lg);
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-sm);
+    flex-shrink: 0;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    font-weight: bold;
+    color: var(--gray-600);
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+}
+
+.modal-close:hover {
+    background: var(--gray-300);
+    color: var(--gray-800);
+}
+
+.modal-title {
+    margin: 0;
+    color: var(--gray-800);
+    font-size: 1.25rem;
+}
+
+/* Animācijas */
+.modal.show {
+    display: block;
+    animation: modalFadeIn 0.3s ease;
+}
+
+.modal.show .modal-content {
+    animation: modalSlideIn 0.3s ease;
+}
+
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes modalSlideIn {
+    from { 
+        transform: translateY(-50px);
+        opacity: 0;
+    }
+    to { 
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
 /* Responsive dizains */
 @media (max-width: 768px) {
     .notifications-header {
@@ -575,6 +1043,40 @@ setInterval(function() {
     .notification-actions {
         justify-content: center;
     }
+    
+    /* Modāla pielāgojumi */
+    .modal {
+        padding: 10px 0;
+    }
+    
+    .modal-content {
+        width: 95%;
+        max-height: 95vh;
+        margin: 10px auto;
+    }
+    
+    .modal-header {
+        padding: var(--spacing-md);
+    }
+    
+    .modal-body {
+        padding: var(--spacing-md);
+        max-height: calc(95vh - 100px);
+    }
+    
+    .modal-footer {
+        padding: var(--spacing-md);
+        flex-direction: column;
+        gap: var(--spacing-xs);
+    }
+    
+    .modal-footer .btn {
+        width: 100%;
+    }
+    
+    .modal-title {
+        font-size: 1.1rem;
+    }
 }
 
 @media (max-width: 480px) {
@@ -593,6 +1095,46 @@ setInterval(function() {
     
     .actions {
         flex-direction: column;
+    }
+    
+    /* Modāla pielāgojumi mazām ierīcēm */
+    .modal {
+        padding: 5px 0;
+    }
+    
+    .modal-content {
+        width: 98%;
+        max-height: 98vh;
+        margin: 5px auto;
+    }
+    
+    .modal-header {
+        padding: 12px;
+        flex-direction: column;
+        gap: 8px;
+        text-align: center;
+    }
+    
+    .modal-body {
+        padding: 12px;
+        max-height: calc(98vh - 80px);
+    }
+    
+    .modal-footer {
+        padding: 12px;
+    }
+    
+    /* Toast pielāgojumi mazām ierīcēm */
+    .mini-toast {
+        right: 10px !important;
+        left: 10px !important;
+        top: 10px !important;
+        transform: translateY(-100%) !important;
+        transition: transform 0.3s ease !important;
+    }
+    
+    .mini-toast.show {
+        transform: translateY(0) !important;
     }
 }
 </style>

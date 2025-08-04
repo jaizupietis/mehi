@@ -16,19 +16,19 @@ try {
     // Vietas
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
-    
+
     // Iekārtas
     $stmt = $pdo->query("SELECT id, nosaukums, vietas_id FROM iekartas WHERE aktīvs = 1 ORDER BY nosaukums");
     $iekartas = $stmt->fetchAll();
-    
+
     // Mehāniķi
     $stmt = $pdo->query("SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE loma = 'Mehāniķis' AND statuss = 'Aktīvs' ORDER BY vards, uzvards");
     $mehaniki = $stmt->fetchAll();
-    
+
     // Uzdevumu kategorijas
     $stmt = $pdo->query("SELECT id, nosaukums FROM uzdevumu_kategorijas WHERE aktīvs = 1 ORDER BY nosaukums");
     $kategorijas = $stmt->fetchAll();
-    
+
     // Regulāro uzdevumu šabloni
     $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
     $regularie_sabloni = $stmt->fetchAll();
@@ -36,7 +36,7 @@ try {
 	// Regulāro uzdevumu šabloni
     $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
     $regularie_sabloni = $stmt->fetchAll();
-    
+
     // Brīvāko mehāniķu saraksts
     $stmt = $pdo->query("
         SELECT l.id, 
@@ -49,7 +49,7 @@ try {
         ORDER BY aktīvo_uzdevumu_skaits ASC, l.vards, l.uzvards
     ");
     $mehaniki_ar_statistiku = $stmt->fetchAll();
-    
+
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot datus: " . $e->getMessage();
 }
@@ -58,7 +58,7 @@ try {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $nosaukums = sanitizeInput($_POST['nosaukums'] ?? '');
     $apraksts = sanitizeInput($_POST['apraksts'] ?? '');
-    $veids = 'Ikdienas'; // Visi uzdevumi ir ikdienas, problēmu risināšana
+    $veids = sanitizeInput($_POST['veids'] ?? '');
     $vietas_id = intval($_POST['vietas_id'] ?? 0);
     $iekartas_id = intval($_POST['iekartas_id'] ?? 0);
     $kategorijas_id = intval($_POST['kategorijas_id'] ?? 0);
@@ -67,36 +67,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $jabeidz_lidz = $_POST['jabeidz_lidz'] ?? '';
     $paredzamais_ilgums = floatval($_POST['paredzamais_ilgums'] ?? 0);
     $problemas_id = intval($_POST['problemas_id'] ?? 0);
-    
+
     // Validācija
     if (empty($nosaukums)) {
         $errors[] = "Uzdevuma nosaukums ir obligāts.";
     }
-    
+
     if (empty($apraksts)) {
         $errors[] = "Uzdevuma apraksts ir obligāts.";
     }
-    
+
+    if (!in_array($veids, ['Ikdienas', 'Regulārais'])) {
+        $errors[] = "Nederīgs uzdevuma veids.";
+    }
+
     if ($piešķirts_id == 0) {
         $errors[] = "Jāizvēlas mehāniķis, kuram piešķirt uzdevumu.";
     }
-    
+
     if (!in_array($prioritate, ['Zema', 'Vidēja', 'Augsta', 'Kritiska'])) {
         $errors[] = "Nederīga prioritāte.";
     }
-    
+
     if (!empty($jabeidz_lidz)) {
         $jabeidz_lidz_timestamp = strtotime($jabeidz_lidz);
         if ($jabeidz_lidz_timestamp === false || $jabeidz_lidz_timestamp <= time()) {
             $errors[] = "Termiņa datums jābūt nākotnē.";
         }
     }
-    
+
     // Ja nav kļūdu, izveidot uzdevumu
     if (empty($errors)) {
         try {
             $pdo->beginTransaction();
-            
+
             // Izveidot uzdevumu
             $stmt = $pdo->prepare("
                 INSERT INTO uzdevumi 
@@ -104,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  piešķirts_id, izveidoja_id, jabeidz_lidz, paredzamais_ilgums, problemas_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            
+
             $stmt->execute([
                 $nosaukums,
                 $apraksts,
@@ -119,16 +123,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $paredzamais_ilgums ?: null,
                 $problemas_id ?: null
             ]);
-            
+
             $uzdevuma_id = $pdo->lastInsertId();
-            
+
             // Apstrādāt failu augšupielādi
             if (!empty($_FILES['faili']['name'][0])) {
                 if (!is_dir(UPLOAD_DIR)) {
                     mkdir(UPLOAD_DIR, 0755, true);
                 }
-                
-                for ($i = 0; i < count($_FILES['faili']['name']); $i++) {
+
+                for ($i = 0; $i < count($_FILES['faili']['name']); $i++) {
                     if ($_FILES['faili']['error'][$i] === UPLOAD_ERR_OK) {
                         $file = [
                             'name' => $_FILES['faili']['name'][$i],
@@ -137,16 +141,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'error' => $_FILES['faili']['error'][$i],
                             'size' => $_FILES['faili']['size'][$i]
                         ];
-                        
+
                         try {
                             $fileInfo = uploadFile($file);
-                            
+
                             $stmt = $pdo->prepare("
                                 INSERT INTO faili 
                                 (originalais_nosaukums, saglabatais_nosaukums, faila_cels, faila_tips, faila_izmers, tips, saistitas_id, augšupielādēja_id)
                                 VALUES (?, ?, ?, ?, ?, 'Uzdevums', ?, ?)
                             ");
-                            
+
                             $stmt->execute([
                                 $fileInfo['originalais_nosaukums'],
                                 $fileInfo['saglabatais_nosaukums'],
@@ -162,12 +166,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            
+
             // Izveidot paziņojumu mehāniķim
             $stmt = $pdo->prepare("SELECT CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE id = ?");
             $stmt->execute([$piešķirts_id]);
             $mehaniķis = $stmt->fetch();
-            
+
             createNotification(
                 $piešķirts_id,
                 'Jauns uzdevums piešķirts',
@@ -176,25 +180,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'Uzdevums',
                 $uzdevuma_id
             );
-            
+
+            // Nosūtīt push paziņojumu
+            global $pushNotificationManager;
+            if ($pushNotificationManager) {
+                $pushNotificationManager->sendTaskNotification(
+                    $piešķirts_id,
+                    $nosaukums,
+                    $uzdevuma_id,
+                    'new_task'
+                );
+            }
+
             // Ja uzdevums izveidots no problēmas, atjaunot problēmas statusu
             if ($problemas_id > 0) {
                 $stmt = $pdo->prepare("UPDATE problemas SET statuss = 'Pārvērsta uzdevumā', apstradasija_id = ? WHERE id = ?");
                 $stmt->execute([$currentUser['id'], $problemas_id]);
             }
-            
+
             // Pievienot uzdevumu vēsturi
             $stmt = $pdo->prepare("
                 INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
                 VALUES (?, NULL, 'Jauns', 'Uzdevums izveidots', ?)
             ");
             $stmt->execute([$uzdevuma_id, $currentUser['id']]);
-            
+
             $pdo->commit();
-            
+
             setFlashMessage('success', 'Uzdevums veiksmīgi izveidots!');
             redirect('tasks.php');
-            
+
         } catch (PDOException $e) {
             $pdo->rollBack();
             $errors[] = "Kļūda izveidojot uzdevumu: " . $e->getMessage();
@@ -246,7 +261,6 @@ include 'includes/header.php';
 <div class="card">
     <div class="card-header">
         <h3>Uzdevuma informācija</h3>
-        <small class="text-muted">Visi uzdevumi tiek izveidoti kā ikdienas problēmu risināšanas uzdevumi</small>
     </div>
     <div class="card-body">
         <form method="POST" enctype="multipart/form-data" id="taskForm">
@@ -254,23 +268,35 @@ include 'includes/header.php';
             <?php if ($problem_data): ?>
                 <input type="hidden" name="problemas_id" value="<?php echo $problem_data['id']; ?>">
             <?php endif; ?>
-            
-            <!-- Uzdevuma nosaukums - pilns platums -->
-            <div class="form-group">
-                <label for="nosaukums" class="form-label">Uzdevuma nosaukums *</label>
-                <input 
-                    type="text" 
-                    id="nosaukums" 
-                    name="nosaukums" 
-                    class="form-control" 
-                    required 
-                    maxlength="200"
-                    value="<?php echo htmlspecialchars($problem_data['nosaukums'] ?? $_POST['nosaukums'] ?? ''); ?>"
-                    placeholder="Ievadiet uzdevuma nosaukumu..."
-                >
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="nosaukums" class="form-label">Uzdevuma nosaukums *</label>
+                        <input 
+                            type="text" 
+                            id="nosaukums" 
+                            name="nosaukums" 
+                            class="form-control" 
+                            required 
+                            maxlength="200"
+                            value="<?php echo htmlspecialchars($problem_data['nosaukums'] ?? $_POST['nosaukums'] ?? ''); ?>"
+                        >
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="veids" class="form-label">Uzdevuma veids *</label>
+                        <select id="veids" name="veids" class="form-control" required>
+                            <option value="">Izvēlieties veidu</option>
+                            <option value="Ikdienas" <?php echo ($problem_data || ($_POST['veids'] ?? '') === 'Ikdienas') ? 'selected' : ''; ?>>Ikdienas, problēmu risināšana</option>
+                            <option value="Regulārais" <?php echo (($_POST['veids'] ?? '') === 'Regulārais') ? 'selected' : ''; ?>>Regulārais</option>
+                        </select>
+                    </div>
+                </div>
             </div>
-            
-            <!-- Uzdevuma apraksts -->
+
             <div class="form-group">
                 <label for="apraksts" class="form-label">Uzdevuma apraksts *</label>
                 <textarea 
@@ -279,11 +305,9 @@ include 'includes/header.php';
                     class="form-control" 
                     rows="4" 
                     required
-                    placeholder="Detalizēti aprakstiet uzdevumu..."
                 ><?php echo htmlspecialchars($problem_data['apraksts'] ?? $_POST['apraksts'] ?? ''); ?></textarea>
             </div>
-            
-            <!-- Vieta un iekārta -->
+
             <div class="row">
                 <div class="col-md-6">
                     <div class="form-group">
@@ -299,7 +323,7 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-6">
                     <div class="form-group">
                         <label for="iekartas_id" class="form-label">Iekārta</label>
@@ -316,8 +340,7 @@ include 'includes/header.php';
                     </div>
                 </div>
             </div>
-            
-            <!-- Kategorija un mehāniķis -->
+
             <div class="row">
                 <div class="col-md-6">
                     <div class="form-group">
@@ -333,7 +356,7 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-6">
                     <div class="form-group">
                         <label for="piešķirts_id" class="form-label">Piešķirt mehāniķim *</label>
@@ -349,8 +372,7 @@ include 'includes/header.php';
                     </div>
                 </div>
             </div>
-            
-            <!-- Prioritāte, termiņš un ilgums -->
+
             <div class="row">
                 <div class="col-md-4">
                     <div class="form-group">
@@ -363,7 +385,7 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-4">
                     <div class="form-group">
                         <label for="jabeidz_lidz" class="form-label">Jābeidz līdz</label>
@@ -377,7 +399,7 @@ include 'includes/header.php';
                         >
                     </div>
                 </div>
-                
+
                 <div class="col-md-4">
                     <div class="form-group">
                         <label for="paredzamais_ilgums" class="form-label">Paredzamā izpilde (stundas)</label>
@@ -390,13 +412,11 @@ include 'includes/header.php';
                             min="0" 
                             max="1000"
                             value="<?php echo $problem_data['aptuvenais_ilgums'] ?? $_POST['paredzamais_ilgums'] ?? ''; ?>"
-                            placeholder="1.5"
                         >
                     </div>
                 </div>
             </div>
-            
-            <!-- Failu augšupielāde -->
+
             <div class="form-group">
                 <label for="faili" class="form-label">Pievienot failus (attēli, PDF)</label>
                 <input 
@@ -411,22 +431,15 @@ include 'includes/header.php';
                     Atļautie failu tipi: JPG, PNG, GIF, PDF, DOC, DOCX. Maksimālais izmērs: <?php echo round(MAX_FILE_SIZE / 1024 / 1024); ?>MB
                 </small>
             </div>
-            
-            <!-- Darbības pogas -->
+
             <div class="form-group">
                 <div class="d-flex justify-content-between">
                     <div>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-plus"></i> Izveidot uzdevumu
-                        </button>
-                        <a href="tasks.php" class="btn btn-secondary">
-                            <i class="fas fa-times"></i> Atcelt
-                        </a>
+                        <button type="submit" class="btn btn-primary">Izveidot uzdevumu</button>
+                        <a href="tasks.php" class="btn btn-secondary">Atcelt</a>
                     </div>
                     <?php if ($problem_data): ?>
-                        <a href="problems.php" class="btn btn-info">
-                            <i class="fas fa-arrow-left"></i> Atgriezties pie problēmām
-                        </a>
+                        <a href="problems.php" class="btn btn-info">Atgriezties pie problēmām</a>
                     <?php endif; ?>
                 </div>
             </div>
@@ -438,7 +451,7 @@ include 'includes/header.php';
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     updateIekartas();
-    
+
     // Form validation
     const taskForm = document.getElementById('taskForm');
     if (taskForm) {
@@ -446,13 +459,13 @@ document.addEventListener('DOMContentLoaded', function() {
             const nosaukums = document.getElementById('nosaukums').value.trim();
             const apraksts = document.getElementById('apraksts').value.trim();
             const piešķirts = document.getElementById('piešķirts_id').value;
-            
+
             if (!nosaukums || !apraksts || !piešķirts) {
                 e.preventDefault();
                 alert('Lūdzu aizpildiet visus obligātos laukus.');
                 return;
             }
-            
+
             // Pārbaudīt failu izmēru
             const fileInput = document.getElementById('faili');
             if (fileInput.files.length > 0) {
@@ -473,14 +486,14 @@ function updateIekartas() {
     const vietasSelect = document.getElementById('vietas_id');
     const iekartasSelect = document.getElementById('iekartas_id');
     const selectedVieta = vietasSelect.value;
-    
+
     // Rādīt visas opcijas
     Array.from(iekartasSelect.options).forEach(option => {
         if (option.value === '') {
             option.style.display = 'block';
             return;
         }
-        
+
         const iekartaVieta = option.getAttribute('data-vieta');
         if (!selectedVieta || iekartaVieta === selectedVieta) {
             option.style.display = 'block';
@@ -488,7 +501,7 @@ function updateIekartas() {
             option.style.display = 'none';
         }
     });
-    
+
     // Atiestatīt izvēli, ja pašreizējā iekārta nepieder izvēlētajai vietai
     if (selectedVieta && iekartasSelect.value) {
         const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
@@ -518,35 +531,14 @@ function updateIekartas() {
     min-width: 250px;
 }
 
-.card-header small {
-    display: block;
-    margin-top: 5px;
-    font-style: italic;
-}
-
-.btn i {
-    margin-right: 5px;
-}
-
 @media (max-width: 768px) {
     .row {
         flex-direction: column;
     }
-    
+
     .col-md-4,
     .col-md-6 {
         width: 100%;
-    }
-    
-    .d-flex {
-        flex-direction: column;
-        gap: 10px;
-    }
-    
-    .d-flex > div {
-        display: flex;
-        gap: 10px;
-        justify-content: center;
     }
 }
 </style>

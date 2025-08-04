@@ -1,6 +1,19 @@
 <?php
 require_once 'config.php';
 
+// Pārbaudīt vai tiek meklēts konkrēts uzdevums
+if (isset($_GET['task_id'])) {
+    $target_task_id = intval($_GET['task_id']);
+    // Pievienot JavaScript kas automātiski atver uzdevumu
+    echo "<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                viewTask($target_task_id);
+            }, 500);
+        });
+    </script>";
+}
+
 // Pārbaudīt atļaujas
 requireRole([ROLE_ADMIN, ROLE_MANAGER]);
 
@@ -56,6 +69,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'Uzdevums',
                         $task_id
                     );
+                	// Push notification
+                    sendStatusChangePushNotification($task_id, $task['piešķirts_id'], $task['nosaukums'], $new_status, $komentars);
                     
                     $pdo->commit();
                     setFlashMessage('success', 'Uzdevuma statuss veiksmīgi mainīts!');

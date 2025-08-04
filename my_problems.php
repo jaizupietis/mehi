@@ -1,6 +1,18 @@
 <?php
 require_once 'config.php';
 
+// Pārbaudīt vai tiek meklēta konkrēta problēma  
+if (isset($_GET['problem_id'])) {
+    $target_problem_id = intval($_GET['problem_id']);
+    echo "<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                viewProblem($target_problem_id);
+            }, 500);
+        });
+    </script>";
+}
+
 // Pārbaudīt atļaujas
 requireRole(ROLE_OPERATOR);
 

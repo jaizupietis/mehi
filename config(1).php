@@ -59,10 +59,11 @@ define('PRIORITY_HIGH', 'Augsta');
 define('PRIORITY_CRITICAL', 'Kritiska');
 
 
+
 // Datubāzes pieslēgšanas klase
 class Database {
     private $pdo;
-    
+
     public function __construct() {
         try {
             $this->pdo = new PDO(
@@ -79,7 +80,7 @@ class Database {
             die("Datubāzes pieslēgšanās kļūda: " . $e->getMessage());
         }
     }
-    
+
     public function getConnection() {
         return $this->pdo;
     }
@@ -89,6 +90,24 @@ class Database {
 $db = new Database();
 $pdo = $db->getConnection();
 
+
+// Telegram Notifications konfigurācija
+define('TELEGRAM_NOTIFICATIONS_ENABLED', true);
+define('TELEGRAM_BOT_TOKEN', 'IEVIETOJIET_ŠEIT_SAVU_BOT_TOKEN'); // Saņemsiet no @BotFather
+
+// Initialize notification managers
+$telegramManager = null;
+
+if (defined('TELEGRAM_NOTIFICATIONS_ENABLED') && TELEGRAM_NOTIFICATIONS_ENABLED && 
+    defined('TELEGRAM_BOT_TOKEN') && TELEGRAM_BOT_TOKEN !== '8126777622:AAFBvEIT6qxGnkYaaXXE-KQ-I_bzK3JpDyg' && isset($pdo)) {
+    try {
+        require_once __DIR__ . '/includes/telegram_notifications.php';
+        $telegramManager = new TelegramNotificationManager($pdo, TELEGRAM_BOT_TOKEN);
+        $GLOBALS['telegramManager'] = $telegramManager;
+    } catch (Exception $e) {
+        error_log("Telegram Manager initialization failed: " . $e->getMessage());
+    }
+}
 
 // Palīgfunkcijas
 function getCurrentUser() {
@@ -108,15 +127,15 @@ function isLoggedIn() {
 function hasRole($roles) {
     $user = getCurrentUser();
     if (!$user) return false;
-    
+
     if (is_string($roles)) {
         return $user['loma'] === $roles;
     }
-    
+
     if (is_array($roles)) {
         return in_array($user['loma'], $roles);
     }
-    
+
     return false;
 }
 
@@ -269,9 +288,9 @@ function uploadFile($file, $targetDir = UPLOAD_DIR) {
 
     $fileInfo = new finfo(FILEINFO_MIME_TYPE);
     $mimeType = $fileInfo->file($file['tmp_name']);
-    
+
     $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    
+
     if (!in_array($extension, ALLOWED_FILE_TYPES)) {
         throw new RuntimeException('Faila tips nav atļauts.');
     }

@@ -137,7 +137,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $problemas_id
                 );
             }
-            
+        	  // Push notification
+            sendProblemPushNotification($problemas_id, $nosaukums);  
+        
             $pdo->commit();
             
             setFlashMessage('success', 'Problēma veiksmīgi ziņota!');        

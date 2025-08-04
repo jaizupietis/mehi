@@ -187,91 +187,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Kļūda pabeidzot uzdevumu: ' . $e->getMessage();
         }
     }
-}
-
-// Filtrēšanas parametri
-$filters = [
-    'veids' => sanitizeInput($_GET['veids'] ?? ''),
-    'statuss' => sanitizeInput($_GET['statuss'] ?? ''),
-    'prioritate' => sanitizeInput($_GET['prioritate'] ?? ''),
-    'vieta' => intval($_GET['vieta'] ?? 0),
-    'search' => sanitizeInput($_GET['search'] ?? ''),
-    'show_overdue' => isset($_GET['show_overdue']) ? 1 : 0
-];
-
-// Kārtošanas parametri
-$sort = sanitizeInput($_GET['sort'] ?? 'izveidots');
-$order = sanitizeInput($_GET['order'] ?? 'DESC');
-
-// Validēt kārtošanas parametrus
-$allowed_sorts = ['izveidots', 'nosaukums', 'prioritate', 'statuss', 'jabeidz_lidz'];
-if (!in_array($sort, $allowed_sorts)) {
-    $sort = 'prioritate';
-}
-if (!in_array($order, ['ASC', 'DESC'])) {
-    $order = 'DESC';
+    
+    // Redirect to prevent form resubmission
+    header('Location: my_tasks.php');
+    exit();
 }
 
 try {
-    // Iegūt filtru datus
-    $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
-    $vietas = $stmt->fetchAll();
-    
-    // Būvēt vaicājumu
-    $where_conditions = ["u.piešķirts_id = ?"];
-    $params = [$currentUser['id']];
-    
-    // Uzdevuma veida filtrs
-    if (!empty($filters['veids'])) {
-        $where_conditions[] = "u.veids = ?";
-        $params[] = $filters['veids'];
-    }
-    
-    if (!empty($filters['statuss'])) {
-        $where_conditions[] = "u.statuss = ?";
-        $params[] = $filters['statuss'];
-    }
-    
-    if (!empty($filters['prioritate'])) {
-        $where_conditions[] = "u.prioritate = ?";
-        $params[] = $filters['prioritate'];
-    }
-    
-    if ($filters['vieta'] > 0) {
-        $where_conditions[] = "u.vietas_id = ?";
-        $params[] = $filters['vieta'];
-    }
-    
-    // Meklēšanas filtrs
-    if (!empty($filters['search'])) {
-        $where_conditions[] = "(u.nosaukums LIKE ? OR u.apraksts LIKE ?)";
-        $search_param = "%{$filters['search']}%";
-        $params[] = $search_param;
-        $params[] = $search_param;
-    }
-    
-    // Nokavēto uzdevumu filtrs
-    if ($filters['show_overdue']) {
-        $where_conditions[] = "((u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts')) OR u.statuss IN ('Jauns', 'Procesā'))";
-    }
-    
-    $where_clause = 'WHERE ' . implode(' AND ', $where_conditions);
-    
-    // Prioritātes kārtošanas loģika
-    $order_clause = "ORDER BY ";
-    if ($sort === 'prioritate') {
-        $order_clause .= "CASE u.prioritate 
-                          WHEN 'Kritiska' THEN 1 
-                          WHEN 'Augsta' THEN 2 
-                          WHEN 'Vidēja' THEN 3 
-                          WHEN 'Zema' THEN 4 
-                          END " . ($order === 'DESC' ? 'ASC' : 'DESC') . ", ";
-        $order_clause .= "u.izveidots DESC";
-    } else {
-        $order_clause .= "u.$sort $order";
-    }
-    
-    // Galvenais vaicājums
+    // Ielādēt visus aktīvos uzdevumus (kārtoti pēc prioritātes un izveidošanas datuma)
     $sql = "
         SELECT u.*, 
                v.nosaukums as vietas_nosaukums,
@@ -290,13 +213,19 @@ try {
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
         LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-        $where_clause
-        $order_clause
+        WHERE u.piešķirts_id = ?
+        ORDER BY 
+            CASE u.prioritate 
+                WHEN 'Kritiska' THEN 1 
+                WHEN 'Augsta' THEN 2 
+                WHEN 'Vidēja' THEN 3 
+                WHEN 'Zema' THEN 4 
+            END ASC,
+            u.izveidots DESC
     ";
     
-    $params[] = $currentUser['id']; // Priekš aktīvs_darbs subquery
     $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
+    $stmt->execute([$currentUser['id'], $currentUser['id']]);
     $uzdevumi = $stmt->fetchAll();
     
     // Statistika pa veidiem
@@ -375,106 +304,11 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- Filtru josla -->
-<div class="filter-bar">
-    <form method="GET" id="filterForm" class="filter-row">
-        <!-- Meklēšanas lauks -->
-        <div class="filter-col">
-            <label for="search" class="form-label">Meklēt</label>
-            <input type="text" id="search" name="search" class="form-control" 
-                   placeholder="Meklēt uzdevumos..." 
-                   value="<?php echo htmlspecialchars($filters['search']); ?>">
-        </div>
-        
-        <!-- Uzdevuma veids -->
-        <div class="filter-col">
-            <label for="veids" class="form-label">Uzdevuma veids</label>
-            <select id="veids" name="veids" class="form-control">
-                <option value="">Visi veidi</option>
-                <option value="Ikdienas" <?php echo $filters['veids'] === 'Ikdienas' ? 'selected' : ''; ?>>Ikdienas uzdevumi</option>
-                <option value="Regulārais" <?php echo $filters['veids'] === 'Regulārais' ? 'selected' : ''; ?>>Regulārie uzdevumi</option>
-            </select>
-        </div>
-        
-        <!-- Statuss -->
-        <div class="filter-col">
-            <label for="statuss" class="form-label">Statuss</label>
-            <select id="statuss" name="statuss" class="form-control">
-                <option value="">Visi statusi</option>
-                <option value="Jauns" <?php echo $filters['statuss'] === 'Jauns' ? 'selected' : ''; ?>>Jauns</option>
-                <option value="Procesā" <?php echo $filters['statuss'] === 'Procesā' ? 'selected' : ''; ?>>Procesā</option>
-                <option value="Pabeigts" <?php echo $filters['statuss'] === 'Pabeigts' ? 'selected' : ''; ?>>Pabeigts</option>
-                <option value="Atcelts" <?php echo $filters['statuss'] === 'Atcelts' ? 'selected' : ''; ?>>Atcelts</option>
-                <option value="Atlikts" <?php echo $filters['statuss'] === 'Atlikts' ? 'selected' : ''; ?>>Atlikts</option>
-            </select>
-        </div>
-        
-        <!-- Prioritāte -->
-        <div class="filter-col">
-            <label for="prioritate" class="form-label">Prioritāte</label>
-            <select id="prioritate" name="prioritate" class="form-control">
-                <option value="">Visas prioritātes</option>
-                <option value="Kritiska" <?php echo $filters['prioritate'] === 'Kritiska' ? 'selected' : ''; ?>>Kritiska</option>
-                <option value="Augsta" <?php echo $filters['prioritate'] === 'Augsta' ? 'selected' : ''; ?>>Augsta</option>
-                <option value="Vidēja" <?php echo $filters['prioritate'] === 'Vidēja' ? 'selected' : ''; ?>>Vidēja</option>
-                <option value="Zema" <?php echo $filters['prioritate'] === 'Zema' ? 'selected' : ''; ?>>Zema</option>
-            </select>
-        </div>
-        
-        <!-- Vieta -->
-        <div class="filter-col">
-            <label for="vieta" class="form-label">Vieta</label>
-            <select id="vieta" name="vieta" class="form-control">
-                <option value="">Visas vietas</option>
-                <?php foreach ($vietas as $vieta): ?>
-                    <option value="<?php echo $vieta['id']; ?>" <?php echo $filters['vieta'] == $vieta['id'] ? 'selected' : ''; ?>>
-                        <?php echo htmlspecialchars($vieta['nosaukums']); ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        
-        <div class="filter-col">
-            <label class="form-label">
-                <input type="checkbox" name="show_overdue" value="1" <?php echo $filters['show_overdue'] ? 'checked' : ''; ?>> 
-                Tikai nokavētie/aktīvie
-            </label>
-        </div>
-        
-        <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
-            <button type="submit" class="btn btn-primary">Filtrēt</button>
-            <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
-        </div>
-    </form>
-</div>
-
-<!-- Kārtošanas kontroles -->
-<div class="sort-controls">
-    <span>Kārtot pēc:</span>
-    <button onclick="sortBy('prioritate', '<?php echo $sort === 'prioritate' && $order === 'DESC' ? 'ASC' : 'DESC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'prioritate' ? 'active' : ''; ?>">
-        Prioritātes <?php echo $sort === 'prioritate' ? ($order === 'DESC' ? '↓' : '↑') : ''; ?>
-    </button>
-    <button onclick="sortBy('jabeidz_lidz', '<?php echo $sort === 'jabeidz_lidz' && $order === 'ASC' ? 'DESC' : 'ASC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'jabeidz_lidz' ? 'active' : ''; ?>">
-        Termiņa <?php echo $sort === 'jabeidz_lidz' ? ($order === 'ASC' ? '↑' : '↓') : ''; ?>
-    </button>
-    <button onclick="sortBy('izveidots', '<?php echo $sort === 'izveidots' && $order === 'DESC' ? 'ASC' : 'DESC'; ?>')" 
-            class="sort-btn <?php echo $sort === 'izveidots' ? 'active' : ''; ?>">
-        Datuma <?php echo $sort === 'izveidots' ? ($order === 'DESC' ? '↓' : '↑') : ''; ?>
-    </button>
-</div>
-
-<!-- Ātras darbības -->
+<!-- Navigācijas saites -->
 <div class="card mb-3">
     <div class="card-body">
         <div class="d-flex flex-wrap gap-2">
-            <a href="?veids=Ikdienas" class="btn btn-<?php echo $filters['veids'] === 'Ikdienas' ? 'primary' : 'outline-primary'; ?>">Ikdienas uzdevumi</a>
-            <a href="?veids=Regulārais" class="btn btn-<?php echo $filters['veids'] === 'Regulārais' ? 'info' : 'outline-info'; ?>">Regulārie uzdevumi</a>
-            <a href="?" class="btn btn-<?php echo empty($filters['veids']) ? 'success' : 'outline-success'; ?>">Visi uzdevumi</a>
-            <a href="?statuss=Jauns" class="btn btn-outline-warning">Tikai Jaunie</a>
-            <a href="?statuss=Procesā" class="btn btn-outline-warning">Tikai Procesā</a>
-            <a href="?show_overdue=1" class="btn btn-outline-danger">Nokavētie</a>
+            <a href="my_tasks.php" class="btn btn-primary">Visi uzdevumi</a>
             <a href="completed_tasks.php" class="btn btn-outline-success">Pabeigto uzdevumu vēsture</a>
         </div>
     </div>
@@ -486,12 +320,7 @@ include 'includes/header.php';
         <div class="card">
             <div class="card-body text-center">
                 <h4>Nav uzdevumu</h4>
-                <p>Jums pašlaik nav piešķirti uzdevumi atbilstoši izvēlētajiem filtriem.</p>
-                <?php if (!empty($filters['veids']) || !empty($filters['statuss']) || !empty($filters['prioritate']) || $filters['vieta'] > 0): ?>
-                    <p><a href="my_tasks.php" class="btn btn-primary">Skatīt visus uzdevumus</a></p>
-                <?php else: ?>
-                    <p>Jums vēl nav piešķirts neviens uzdevums.</p>
-                <?php endif; ?>
+                <p>Jums pašlaik nav piešķirts neviens uzdevums.</p>
             </div>
         </div>
     <?php else: ?>
@@ -631,61 +460,6 @@ include 'includes/header.php';
 </div>
 
 <script>
-// JavaScript filtrācijas funkcionalitātei
-
-// Inicializācija kad lapa ielādējusies
-document.addEventListener('DOMContentLoaded', function() {
-    const form = document.getElementById('filterForm');
-    
-    if (!form) {
-        console.error('FilterForm nav atrasts');
-        return;
-    }
-    
-    // Meklēšanas lauka debounce funkcionalitāte
-    const searchInput = document.getElementById('search');
-    let searchTimeout;
-    
-    if (searchInput) {
-        searchInput.addEventListener('input', function() {
-            clearTimeout(searchTimeout);
-            const searchValue = this.value.trim();
-            
-            searchTimeout = setTimeout(() => {
-                console.log('Search triggered:', searchValue);
-                form.submit();
-            }, 800); // 800ms delay
-        });
-        
-        // Arī Enter taustiņa nospiešana
-        searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                clearTimeout(searchTimeout);
-                console.log('Search submitted via Enter:', this.value);
-                form.submit();
-            }
-        });
-    }
-    
-    // Manual submit for other form elements
-    function submitForm() {
-        form.submit();
-    }
-    
-    // Add onchange handlers to select elements
-    const selectElements = form.querySelectorAll('select');
-    selectElements.forEach(element => {
-        element.onchange = submitForm;
-    });
-    
-    // Add onchange handlers to checkbox elements
-    const checkboxElements = form.querySelectorAll('input[type="checkbox"]');
-    checkboxElements.forEach(element => {
-        element.onchange = submitForm;
-    });
-});
-
 // Darba sākšana
 function startWork(taskId) {
     if (confirm('Vai vēlaties sākt darbu pie šī uzdevuma?')) {
@@ -750,58 +524,6 @@ function submitAction(action, taskId) {
     
     document.body.appendChild(form);
     form.submit();
-}
-
-// Kārtošanas funkcija
-function sortBy(column, direction) {
-    const url = new URL(window.location);
-    url.searchParams.set('sort', column);
-    url.searchParams.set('order', direction);
-    
-    // Saglabāt visus esošos filtrus
-    const form = document.getElementById('filterForm');
-    if (form) {
-        const formData = new FormData(form);
-        for (let [key, value] of formData.entries()) {
-            if (value && key !== 'sort' && key !== 'order') {
-                if (key === 'show_overdue') {
-                    // Checkbox - saglabāt tikai ja atzīmēts
-                    const checkbox = form.querySelector(`input[name="${key}"]`);
-                    if (checkbox && checkbox.checked) {
-                        url.searchParams.set(key, '1');
-                    }
-                } else {
-                    url.searchParams.set(key, value);
-                }
-            }
-        }
-    }
-    
-    window.location = url;
-}
-
-// Filtru notīrīšana
-function clearFilters() {
-    // Notīrīt visus form elementus
-    const form = document.getElementById('filterForm');
-    if (form) {
-        // Atiestatīt visus select elementus
-        form.querySelectorAll('select').forEach(select => {
-            select.selectedIndex = 0;
-        });
-        
-        // Atiestatīt visus input elementus
-        form.querySelectorAll('input').forEach(input => {
-            if (input.type === 'checkbox') {
-                input.checked = false;
-            } else {
-                input.value = '';
-            }
-        });
-    }
-    
-    // Pārsūtīt uz sākotnējo lapu bez parametriem
-    window.location.href = 'my_tasks.php';
 }
 </script>
 
