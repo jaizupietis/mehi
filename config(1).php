@@ -99,7 +99,7 @@ define('TELEGRAM_BOT_TOKEN', 'IEVIETOJIET_ŠEIT_SAVU_BOT_TOKEN'); // Saņemsiet 
 $telegramManager = null;
 
 if (defined('TELEGRAM_NOTIFICATIONS_ENABLED') && TELEGRAM_NOTIFICATIONS_ENABLED && 
-    defined('TELEGRAM_BOT_TOKEN') && TELEGRAM_BOT_TOKEN !== '8126777622:AAFBvEIT6qxGnkYaaXXE-KQ-I_bzK3JpDyg' && isset($pdo)) {
+    defined('TELEGRAM_BOT_TOKEN') && TELEGRAM_BOT_TOKEN !== '' && isset($pdo)) {
     try {
         require_once __DIR__ . '/includes/telegram_notifications.php';
         $telegramManager = new TelegramNotificationManager($pdo, TELEGRAM_BOT_TOKEN);
