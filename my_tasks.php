@@ -200,7 +200,7 @@ $filters = [
 ];
 
 // Kārtošanas parametri
-$sort = sanitizeInput($_GET['sort'] ?? 'prioritate');
+$sort = sanitizeInput($_GET['sort'] ?? 'izveidots');
 $order = sanitizeInput($_GET['order'] ?? 'DESC');
 
 // Validēt kārtošanas parametrus
@@ -266,8 +266,10 @@ try {
                           WHEN 'Vidēja' THEN 3 
                           WHEN 'Zema' THEN 4 
                           END " . ($order === 'DESC' ? 'ASC' : 'DESC') . ", ";
+        $order_clause .= "u.izveidots DESC";
+    } else {
+        $order_clause .= "u.$sort $order";
     }
-    $order_clause .= "u.$sort $order";
     
     // Galvenais vaicājums
     $sql = "
@@ -629,34 +631,59 @@ include 'includes/header.php';
 </div>
 
 <script>
-// JavaScript ar labotiem event listeneriem
+// JavaScript filtrācijas funkcionalitātei
 
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     const form = document.getElementById('filterForm');
     
-    // Event listeners filtru elementiem - automātiska forma iesniegšana
-    // Tikai select un checkbox elementiem
-    document.querySelectorAll('#filterForm select, #filterForm input[type="checkbox"]').forEach(element => {
-        element.addEventListener('change', function() {
-            console.log('Filter changed:', this.name, this.value, this.checked); // Debug
-            form.submit();
-        });
-    });
+    if (!form) {
+        console.error('FilterForm nav atrasts');
+        return;
+    }
     
-    // Meklēšanas lauka debounce
+    // Meklēšanas lauka debounce funkcionalitāte
     const searchInput = document.getElementById('search');
     let searchTimeout;
     
     if (searchInput) {
         searchInput.addEventListener('input', function() {
             clearTimeout(searchTimeout);
+            const searchValue = this.value.trim();
+            
             searchTimeout = setTimeout(() => {
-                console.log('Search triggered:', this.value); // Debug
+                console.log('Search triggered:', searchValue);
                 form.submit();
-            }, 500); // 500ms delay
+            }, 800); // 800ms delay
+        });
+        
+        // Arī Enter taustiņa nospiešana
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                clearTimeout(searchTimeout);
+                console.log('Search submitted via Enter:', this.value);
+                form.submit();
+            }
         });
     }
+    
+    // Manual submit for other form elements
+    function submitForm() {
+        form.submit();
+    }
+    
+    // Add onchange handlers to select elements
+    const selectElements = form.querySelectorAll('select');
+    selectElements.forEach(element => {
+        element.onchange = submitForm;
+    });
+    
+    // Add onchange handlers to checkbox elements
+    const checkboxElements = form.querySelectorAll('input[type="checkbox"]');
+    checkboxElements.forEach(element => {
+        element.onchange = submitForm;
+    });
 });
 
 // Darba sākšana
@@ -731,19 +758,49 @@ function sortBy(column, direction) {
     url.searchParams.set('sort', column);
     url.searchParams.set('order', direction);
     
-    // Saglabāt esošos filtrus
+    // Saglabāt visus esošos filtrus
     const form = document.getElementById('filterForm');
-    const formData = new FormData(form);
-    for (let [key, value] of formData.entries()) {
-        if (value && key !== 'sort' && key !== 'order') {
-            url.searchParams.set(key, value);
+    if (form) {
+        const formData = new FormData(form);
+        for (let [key, value] of formData.entries()) {
+            if (value && key !== 'sort' && key !== 'order') {
+                if (key === 'show_overdue') {
+                    // Checkbox - saglabāt tikai ja atzīmēts
+                    const checkbox = form.querySelector(`input[name="${key}"]`);
+                    if (checkbox && checkbox.checked) {
+                        url.searchParams.set(key, '1');
+                    }
+                } else {
+                    url.searchParams.set(key, value);
+                }
+            }
         }
     }
+    
     window.location = url;
 }
 
 // Filtru notīrīšana
 function clearFilters() {
+    // Notīrīt visus form elementus
+    const form = document.getElementById('filterForm');
+    if (form) {
+        // Atiestatīt visus select elementus
+        form.querySelectorAll('select').forEach(select => {
+            select.selectedIndex = 0;
+        });
+        
+        // Atiestatīt visus input elementus
+        form.querySelectorAll('input').forEach(input => {
+            if (input.type === 'checkbox') {
+                input.checked = false;
+            } else {
+                input.value = '';
+            }
+        });
+    }
+    
+    // Pārsūtīt uz sākotnējo lapu bez parametriem
     window.location.href = 'my_tasks.php';
 }
 </script>
