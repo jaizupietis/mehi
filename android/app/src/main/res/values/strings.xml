@@ -1,0 +1,8 @@
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AVOTI TMS</string>
+    <string name="title_activity_main">AVOTI Task Management System</string>
+    <string name="package_name">lv.avoti.tms</string>
+    <string name="custom_url_scheme">avoti-tms</string>
+</resources>

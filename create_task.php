@@ -177,6 +177,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $uzdevuma_id
             );
             
+            // Telegram paziņojums mehāniķim
+            sendTaskTelegramNotification($piešķirts_id, $nosaukums, $uzdevuma_id, 'new_task');
+            
             // Ja uzdevums izveidots no problēmas, atjaunot problēmas statusu
             if ($problemas_id > 0) {
                 $stmt = $pdo->prepare("UPDATE problemas SET statuss = 'Pārvērsta uzdevumā', apstradasija_id = ? WHERE id = ?");
@@ -303,16 +306,26 @@ include 'includes/header.php';
                 <div class="col-md-6">
                     <div class="form-group">
                         <label for="iekartas_id" class="form-label">Iekārta</label>
-                        <select id="iekartas_id" name="iekartas_id" class="form-control">
-                            <option value="">Izvēlieties iekārtu</option>
-                            <?php foreach ($iekartas as $iekarta): ?>
-                                <option value="<?php echo $iekarta['id']; ?>" 
-                                    data-vieta="<?php echo $iekarta['vietas_id']; ?>"
-                                    <?php echo ($problem_data && $problem_data['iekartas_id'] == $iekarta['id']) || ($_POST['iekartas_id'] ?? '') == $iekarta['id'] ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($iekarta['nosaukums']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
+                        <div class="searchable-select-container">
+                            <input 
+                                type="text" 
+                                id="iekartas_search" 
+                                class="form-control searchable-input" 
+                                placeholder="Meklēt iekārtu vai izvēlieties no saraksta..."
+                                autocomplete="off"
+                            >
+                            <select id="iekartas_id" name="iekartas_id" class="form-control searchable-select">
+                                <option value="">Izvēlieties iekārtu</option>
+                                <?php foreach ($iekartas as $iekarta): ?>
+                                    <option value="<?php echo $iekarta['id']; ?>" 
+                                        data-vieta="<?php echo $iekarta['vietas_id']; ?>"
+                                        data-name="<?php echo htmlspecialchars(strtolower(trim($iekarta['nosaukums']))); ?>"
+                                        <?php echo ($problem_data && $problem_data['iekartas_id'] == $iekarta['id']) || ($_POST['iekartas_id'] ?? '') == $iekarta['id'] ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars(trim($iekarta['nosaukums'])); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -438,6 +451,17 @@ include 'includes/header.php';
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     updateIekartas();
+    initSearchableSelect();
+    
+    // Uzstādīt noklusēto iekārtas nosaukumu meklēšanas laukā
+    const iekartasSelect = document.getElementById('iekartas_id');
+    const searchInput = document.getElementById('iekartas_search');
+    if (iekartasSelect.value && searchInput) {
+        const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
+        if (selectedOption.value) {
+            searchInput.value = selectedOption.textContent.trim();
+        }
+    }
     
     // Form validation
     const taskForm = document.getElementById('taskForm');
@@ -472,6 +496,7 @@ document.addEventListener('DOMContentLoaded', function() {
 function updateIekartas() {
     const vietasSelect = document.getElementById('vietas_id');
     const iekartasSelect = document.getElementById('iekartas_id');
+    const iekartasSearch = document.getElementById('iekartas_search');
     const selectedVieta = vietasSelect.value;
     
     // Rādīt visas opcijas
@@ -495,8 +520,161 @@ function updateIekartas() {
         const selectedIekartaVieta = selectedOption.getAttribute('data-vieta');
         if (selectedIekartaVieta !== selectedVieta) {
             iekartasSelect.value = '';
+            iekartasSearch.value = '';
         }
     }
+    
+    // Atjaunot meklēšanas filtrāciju
+    filterIekartas();
+}
+
+// Iekārtu meklēšanas funkcionalitāte
+function filterIekartas() {
+    const searchInput = document.getElementById('iekartas_search');
+    const iekartasSelect = document.getElementById('iekartas_id');
+    const vietasSelect = document.getElementById('vietas_id');
+    const searchText = searchInput.value.toLowerCase();
+    const selectedVieta = vietasSelect.value;
+    
+    let hasVisibleOptions = false;
+    
+    Array.from(iekartasSelect.options).forEach(option => {
+        if (option.value === '') {
+            option.style.display = 'block';
+            return;
+        }
+        
+        const iekartaName = option.getAttribute('data-name') || '';
+        const iekartaVieta = option.getAttribute('data-vieta');
+        
+        // Pārbaudīt vai atbilst vietas filtram
+        const vietaMatch = !selectedVieta || iekartaVieta === selectedVieta;
+        
+        // Pārbaudīt vai atbilst meklēšanas tekstam
+        const searchMatch = !searchText || iekartaName.includes(searchText);
+        
+        if (vietaMatch && searchMatch) {
+            option.style.display = 'block';
+            hasVisibleOptions = true;
+        } else {
+            option.style.display = 'none';
+        }
+    });
+    
+    // Ja nav redzamu opciju, rādīt ziņojumu
+    if (!hasVisibleOptions && searchText) {
+        // Pievienot pagaidu opciju ar ziņojumu
+        const noResultsOption = iekartasSelect.querySelector('.no-results');
+        if (!noResultsOption) {
+            const option = document.createElement('option');
+            option.className = 'no-results';
+            option.disabled = true;
+            option.textContent = 'Nav atrasta iekārta ar šādu nosaukumu';
+            iekartasSelect.appendChild(option);
+        }
+        iekartasSelect.querySelector('.no-results').style.display = 'block';
+    } else {
+        // Noņemt "nav rezultātu" opciju
+        const noResultsOption = iekartasSelect.querySelector('.no-results');
+        if (noResultsOption) {
+            noResultsOption.style.display = 'none';
+        }
+    }
+}
+
+// Inicializēt iekārtu meklēšanu
+function initSearchableSelect() {
+    const searchInput = document.getElementById('iekartas_search');
+    const iekartasSelect = document.getElementById('iekartas_id');
+    
+    if (!searchInput || !iekartasSelect) return;
+    
+    // Meklēšanas ievades notikums
+    searchInput.addEventListener('input', function() {
+        filterIekartas();
+        
+        // Ja ir tikai viena redzama opcija (bez tukšās), automātiski izvēlēties to
+        const visibleOptions = Array.from(iekartasSelect.options).filter(option => 
+            option.style.display !== 'none' && option.value !== ''
+        );
+        
+        if (visibleOptions.length === 1) {
+            iekartasSelect.value = visibleOptions[0].value;
+        }
+    });
+    
+    // Kad izvēlas no select, atjaunot meklēšanas lauku
+    iekartasSelect.addEventListener('change', function() {
+        const selectedOption = this.options[this.selectedIndex];
+        if (selectedOption.value) {
+            searchInput.value = selectedOption.textContent.trim();
+        } else {
+            searchInput.value = '';
+        }
+    });
+    
+    // Kad fokusē meklēšanas lauku, parādīt visas opcijas
+    searchInput.addEventListener('focus', function() {
+        iekartasSelect.classList.add('show');
+        iekartasSelect.size = Math.min(8, iekartasSelect.options.length);
+        filterIekartas(); // Atjaunot filtrāciju
+    });
+    
+    // Kad zaudē fokusu no meklēšanas lauka, paslēpt opcijas (ar aizkavi)
+    searchInput.addEventListener('blur', function(e) {
+        setTimeout(() => {
+            // Pārbaudīt vai fokuss nav pārslēgts uz select elementu
+            if (document.activeElement !== iekartasSelect) {
+                iekartasSelect.classList.remove('show');
+                iekartasSelect.size = 1;
+            }
+        }, 150);
+    });
+    
+    // Kad fokusē select, neslēpt to
+    iekartasSelect.addEventListener('focus', function() {
+        iekartasSelect.classList.add('show');
+    });
+    
+    // Kad zaudē fokusu no select, paslēpt opcijas
+    iekartasSelect.addEventListener('blur', function() {
+        setTimeout(() => {
+            if (document.activeElement !== searchInput) {
+                iekartasSelect.classList.remove('show');
+                iekartasSelect.size = 1;
+            }
+        }, 150);
+    });
+    
+    // Peles klikšķis uz select opcijas
+    iekartasSelect.addEventListener('click', function(e) {
+        if (this.value) {
+            const selectedOption = this.options[this.selectedIndex];
+            searchInput.value = selectedOption.textContent.trim();
+            iekartasSelect.classList.remove('show');
+            iekartasSelect.size = 1;
+        }
+    });
+    
+    // Klaviatūras navigācija
+    searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            iekartasSelect.focus();
+            if (iekartasSelect.selectedIndex < iekartasSelect.options.length - 1) {
+                iekartasSelect.selectedIndex++;
+            }
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const visibleOptions = Array.from(iekartasSelect.options).filter(option => 
+                option.style.display !== 'none' && option.value !== ''
+            );
+            if (visibleOptions.length === 1) {
+                iekartasSelect.value = visibleOptions[0].value;
+                searchInput.value = visibleOptions[0].textContent.trim();
+            }
+        }
+    });
 }
 </script>
 
@@ -528,6 +706,55 @@ function updateIekartas() {
     margin-right: 5px;
 }
 
+/* Meklējamā select stila */
+.searchable-select-container {
+    position: relative;
+}
+
+.searchable-input {
+    position: relative;
+    z-index: 2;
+}
+
+.searchable-select {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    max-height: 200px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid #ddd;
+    border-top: none;
+    display: none;
+    cursor: pointer;
+}
+
+.searchable-select.show {
+    display: block;
+}
+
+.searchable-input:focus + .searchable-select {
+    display: block;
+}
+
+.searchable-select option {
+    padding: 8px 12px;
+}
+
+.searchable-select option {
+    padding: 8px 12px;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.searchable-select option:hover {
+    background-color: #f5f5f5;
+}
+
 @media (max-width: 768px) {
     .row {
         flex-direction: column;
@@ -547,6 +774,10 @@ function updateIekartas() {
         display: flex;
         gap: 10px;
         justify-content: center;
+    }
+    
+    .searchable-select {
+        max-height: 150px;
     }
 }
 </style>

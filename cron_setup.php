@@ -502,12 +502,10 @@ let autoRefreshEnabled = false;
 
 // Log faila atjaunošana
 function refreshLogs() {
-    fetch('<?php echo $log_file; ?>?t=' + Date.now())
+    fetch('ajax/get_logs.php?t=' + Date.now())
         .then(response => response.text())
         .then(data => {
-            const lines = data.trim().split('\n');
-            const lastLines = lines.slice(-100).join('\n');
-            document.getElementById('logContent').textContent = lastLines;
+            document.getElementById('logContent').textContent = data;
             
             // Automātiski scroll uz leju
             const logElement = document.getElementById('logContent');

@@ -1,0 +1,40 @@
+
+{
+  "name": "avoti-tms",
+  "version": "1.0.0",
+  "description": "AVOTI Task Management System - PWA & Android App",
+  "main": "index.php",
+  "scripts": {
+    "build": "echo 'Building for production...'",
+    "cap:add:android": "npx cap add android",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android",
+    "cap:build:android": "npx cap build android",
+    "android:dev": "npx cap run android",
+    "android:build": "npm run build && npx cap sync && npx cap build android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^5.0.0",
+    "@capacitor/android": "^5.0.0",
+    "@capacitor/cli": "^5.0.0",
+    "@capacitor/push-notifications": "^5.0.0",
+    "@capacitor/local-notifications": "^5.0.0",
+    "@capacitor/splash-screen": "^5.0.0",
+    "@capacitor/status-bar": "^5.0.0",
+    "@capacitor/filesystem": "^5.0.0",
+    "@capacitor/device": "^5.0.0",
+    "@capacitor/network": "^5.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.0"
+  },
+  "keywords": [
+    "task-management",
+    "pwa",
+    "android",
+    "avoti",
+    "mobile-app"
+  ],
+  "author": "AVOTI",
+  "license": "MIT"
+}

@@ -14,52 +14,73 @@ $success = false;
 // Apstrādāt POST darbības
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'start_work' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
-        
+
         try {
             $pdo->beginTransaction();
-            
+
             // Pārbaudīt vai uzdevums pieder lietotājam
-            $stmt = $pdo->prepare("SELECT statuss FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
+            $stmt = $pdo->prepare("SELECT statuss, prioritate, problemas_id FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
             $stmt->execute([$task_id, $currentUser['id']]);
             $task = $stmt->fetch();
-            
+
             if ($task && $task['statuss'] === 'Jauns') {
                 // Mainīt statusu uz "Procesā"
                 $stmt = $pdo->prepare("UPDATE uzdevumi SET statuss = 'Procesā', sakuma_laiks = NOW() WHERE id = ?");
                 $stmt->execute([$task_id]);
-                
+
+                // Ja tas ir kritisks uzdevums ar problēmu, atjaunot problēmas statusu
+                if ($task && $task['prioritate'] === 'Kritiska' && $task['problemas_id']) {
+                    // Atjaunot problēmas statusu uz "Pārvērsta uzdevumā"
+                    $stmt = $pdo->prepare("
+                        UPDATE problemas 
+                        SET statuss = 'Pārvērsta uzdevumā', 
+                            apstradasija_id = ?,
+                            atjaunots = NOW()
+                        WHERE id = ?
+                    ");
+                    $stmt->execute([$currentUser['id'], $task['problemas_id']]);
+
+                    // Noņemt uzdevumu citiem mehāniķiem
+                    removeCriticalTaskFromOtherMechanics($task_id, $currentUser['id']);
+                }
+
                 // Sākt darba laika uzskaiti
                 $stmt = $pdo->prepare("
                     INSERT INTO darba_laiks (lietotaja_id, uzdevuma_id, sakuma_laiks)
                     VALUES (?, ?, NOW())
                 ");
                 $stmt->execute([$currentUser['id'], $task_id]);
-                
+
                 // Pievienot vēsturi
                 $stmt = $pdo->prepare("
                     INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
                     VALUES (?, 'Jauns', 'Procesā', 'Darbs sākts', ?)
                 ");
                 $stmt->execute([$task_id, $currentUser['id']]);
-                
+
                 $pdo->commit();
                 setFlashMessage('success', 'Darbs sākts!');
-            } else {
-                $errors[] = 'Nevar sākt darbu pie šī uzdevuma.';
+            } elseif ($task && $task['statuss'] === 'Procesā' && $task['piešķirts_id'] == $currentUser['id']) {
+                 $errors[] = 'Jūs jau strādājat pie šī uzdevuma.';
+            } elseif ($task && $task['statuss'] === 'Nodalīts') {
+                 $errors[] = 'Šis uzdevums ir pagaidām nav pieejams (novākts no citiem).';
             }
-            
+            else {
+                $errors[] = 'Nevar sākt darbu pie šī uzdevuma (nepareizs statuss vai nav piešķirts Jums).';
+            }
+
         } catch (PDOException $e) {
             $pdo->rollBack();
             $errors[] = 'Kļūda sākot darbu: ' . $e->getMessage();
         }
     }
-    
+
     if ($action === 'pause_work' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
-        
+
         try {
             // Pabeigt pašreizējo darba laika ierakstu
             $stmt = $pdo->prepare("
@@ -69,17 +90,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
             ");
             $stmt->execute([$task_id, $currentUser['id']]);
-            
+
             setFlashMessage('success', 'Darbs pauzēts!');
-            
+
         } catch (PDOException $e) {
             $errors[] = 'Kļūda pauzējot darbu: ' . $e->getMessage();
         }
     }
-    
+
     if ($action === 'resume_work' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
-        
+
         try {
             // Sākt jaunu darba laika ierakstu
             $stmt = $pdo->prepare("
@@ -87,27 +108,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 VALUES (?, ?, NOW())
             ");
             $stmt->execute([$currentUser['id'], $task_id]);
-            
+
             setFlashMessage('success', 'Darbs atsākts!');
-            
+
         } catch (PDOException $e) {
             $errors[] = 'Kļūda atsākot darbu: ' . $e->getMessage();
         }
     }
-    
+
     if ($action === 'complete_task' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
         $komentars = sanitizeInput($_POST['komentars'] ?? '');
         $faktiskais_ilgums = floatval($_POST['faktiskais_ilgums'] ?? 0);
-        
+
         try {
             $pdo->beginTransaction();
-            
+
             // Pārbaudīt vai uzdevums pieder lietotājam un iegūt uzdevuma veidu
             $stmt = $pdo->prepare("SELECT statuss, veids FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
             $stmt->execute([$task_id, $currentUser['id']]);
             $task = $stmt->fetch();
-            
+
             if ($task && in_array($task['statuss'], ['Jauns', 'Procesā'])) {
                 // Pabeigt darba laika uzskaiti
                 $stmt = $pdo->prepare("
@@ -117,7 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
                 ");
                 $stmt->execute([$task_id, $currentUser['id']]);
-                
+
                 // Aprēķināt kopējo darba laiku
                 $stmt = $pdo->prepare("
                     SELECT SUM(stundu_skaits) as kopejais_laiks 
@@ -126,7 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([$task_id, $currentUser['id']]);
                 $total_time = $stmt->fetchColumn() ?: 0;
-                
+
                 // Atjaunot uzdevuma statusu
                 $stmt = $pdo->prepare("
                     UPDATE uzdevumi 
@@ -141,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $faktiskais_ilgums ?: $total_time, 
                     $task_id
                 ]);
-                
+
                 // Pievienot vēsturi
                 $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
                 $stmt = $pdo->prepare("
@@ -155,7 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     "$uzdevuma_tips pabeigts" . ($komentars ? ': ' . $komentars : ''), 
                     $currentUser['id']
                 ]);
-                
+
                 // Paziņot menedžerim/administratoram
                 $stmt = $pdo->prepare("
                     SELECT u.nosaukums, l.id, l.loma 
@@ -164,7 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([$task_id]);
                 $managers = $stmt->fetchAll();
-                
+
                 foreach ($managers as $manager) {
                     createNotification(
                         $manager['id'],
@@ -175,19 +196,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $task_id
                     );
                 }
-                
+
                 $pdo->commit();
                 setFlashMessage('success', "$uzdevuma_tips pabeigts!");
             } else {
                 $errors[] = 'Nevar pabeigt šo uzdevumu.';
             }
-            
+
         } catch (PDOException $e) {
             $pdo->rollBack();
             $errors[] = 'Kļūda pabeidzot uzdevumu: ' . $e->getMessage();
         }
     }
-    
+
     // Redirect to prevent form resubmission
     header('Location: my_tasks.php');
     exit();
@@ -207,13 +228,14 @@ try {
                    WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 
                    WHEN u.statuss IN ('Jauns', 'Procesā') AND DATEDIFF(NOW(), u.izveidots) > 3 THEN 1
                    ELSE 0 
-               END as ir_nokavets
+               END as ir_nokavets,
+               (SELECT COUNT(*) FROM uzdevumi WHERE prioritate = 'Kritiska' AND statuss != 'Pabeigts') as kopējās_kritiskās_problēmas
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
         LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-        WHERE u.piešķirts_id = ?
+        WHERE u.piešķirts_id = ? AND u.statuss != 'Nodalīts'
         ORDER BY 
             CASE u.prioritate 
                 WHEN 'Kritiska' THEN 1 
@@ -223,11 +245,17 @@ try {
             END ASC,
             u.izveidots DESC
     ";
-    
+
     $stmt = $pdo->prepare($sql);
     $stmt->execute([$currentUser['id'], $currentUser['id']]);
     $uzdevumi = $stmt->fetchAll();
-    
+
+    // Iegūt kopējo kritisko problēmu skaitu visiem operatoriem
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE prioritate = 'Kritiska' AND statuss != 'Pabeigts'");
+    $stmt->execute();
+    $kopējās_kritiskās_problēmas = $stmt->fetchColumn();
+
+
     // Statistika pa veidiem
     $stmt = $pdo->prepare("
         SELECT 
@@ -237,7 +265,7 @@ try {
             SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi,
             SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēti
         FROM uzdevumi u
-        WHERE u.piešķirts_id = ?
+        WHERE u.piešķirts_id = ? AND u.statuss != 'Nodalīts'
         GROUP BY u.veids
     ");
     $stmt->execute([$currentUser['id']]);
@@ -245,11 +273,12 @@ try {
     while ($row = $stmt->fetch()) {
         $statistika_pa_veidiem[$row['veids']] = $row;
     }
-    
+
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot uzdevumus: " . $e->getMessage();
     $uzdevumi = [];
     $statistika_pa_veidiem = [];
+    $kopējās_kritiskās_problēmas = 0;
 }
 
 include 'includes/header.php';
@@ -267,12 +296,12 @@ include 'includes/header.php';
         <div class="stat-number"><?php echo ($statistika_pa_veidiem['Ikdienas']['kopā'] ?? 0); ?></div>
         <div class="stat-label">Ikdienas uzdevumi</div>
     </div>
-    
+
     <div class="stat-card" style="border-left-color: var(--info-color);">
         <div class="stat-number" style="color: var(--info-color);"><?php echo ($statistika_pa_veidiem['Regulārais']['kopā'] ?? 0); ?></div>
         <div class="stat-label">Regulārie uzdevumi</div>
     </div>
-    
+
     <div class="stat-card" style="border-left-color: var(--warning-color);">
         <div class="stat-number" style="color: var(--warning-color);">
             <?php 
@@ -282,7 +311,7 @@ include 'includes/header.php';
         </div>
         <div class="stat-label">Aktīvie uzdevumi</div>
     </div>
-    
+
     <div class="stat-card" style="border-left-color: var(--success-color);">
         <div class="stat-number" style="color: var(--success-color);">
             <?php 
@@ -292,7 +321,7 @@ include 'includes/header.php';
         </div>
         <div class="stat-label">Pabeigti uzdevumi</div>
     </div>
-    
+
     <div class="stat-card" style="border-left-color: var(--danger-color);">
         <div class="stat-number" style="color: var(--danger-color);">
             <?php 
@@ -302,6 +331,8 @@ include 'includes/header.php';
         </div>
         <div class="stat-label">Nokavētie uzdevumi</div>
     </div>
+
+    
 </div>
 
 <!-- Navigācijas saites -->
@@ -356,7 +387,7 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="task-body">
                     <div class="task-meta">
                         <?php if ($uzdevums['vietas_nosaukums']): ?>
@@ -379,16 +410,16 @@ include 'includes/header.php';
                             <div><strong>Paredzamais ilgums:</strong> <?php echo $uzdevums['paredzamais_ilgums']; ?> h</div>
                         <?php endif; ?>
                     </div>
-                    
+
                     <div class="task-description">
                         <?php echo htmlspecialchars(substr($uzdevums['apraksts'], 0, 200)) . (strlen($uzdevums['apraksts']) > 200 ? '...' : ''); ?>
                     </div>
                 </div>
-                
+
                 <div class="task-footer">
                     <div class="task-actions">
                         <button onclick="viewTask(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-info">Skatīt detaļas</button>
-                        
+
                         <?php if ($uzdevums['statuss'] === 'Jauns'): ?>
                             <button onclick="startWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-success">Sākt darbu</button>
                         <?php elseif ($uzdevums['statuss'] === 'Procesā'): ?>
@@ -400,7 +431,7 @@ include 'includes/header.php';
                             <button onclick="completeTask(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-success">Pabeigt</button>
                         <?php endif; ?>
                     </div>
-                    
+
                     <div class="task-time">
                         <small>Izveidots: <?php echo formatDate($uzdevums['izveidots']); ?></small>
                     </div>
@@ -423,13 +454,13 @@ include 'includes/header.php';
             <form id="completeTaskForm" method="POST">
                 <input type="hidden" name="action" value="complete_task">
                 <input type="hidden" name="task_id" id="completeTaskId">
-                
+
                 <div class="form-group">
                     <label for="faktiskais_ilgums" class="form-label">Faktiskais izpildes laiks (stundas)</label>
                     <input type="number" id="faktiskais_ilgums" name="faktiskais_ilgums" class="form-control" step="0.1" min="0">
                     <small class="form-text text-muted">Atstājiet tukšu, lai automātiski aprēķinātu no darba laika</small>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="komentars" class="form-label">Komentārs par paveikto darbu</label>
                     <textarea id="komentars" name="komentars" class="form-control" rows="4" placeholder="Aprakstiet paveikto darbu, izmantotie materiāli, problēmas, u.c."></textarea>
@@ -508,22 +539,41 @@ function submitAction(action, taskId) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.style.display = 'none';
-    
+
     const actionInput = document.createElement('input');
     actionInput.type = 'hidden';
     actionInput.name = 'action';
     actionInput.value = action;
-    
+
     const taskInput = document.createElement('input');
     taskInput.type = 'hidden';
     taskInput.name = 'task_id';
     taskInput.value = taskId;
-    
+
     form.appendChild(actionInput);
     form.appendChild(taskInput);
-    
+
     document.body.appendChild(form);
     form.submit();
+}
+
+// Helper functions for modal management (assuming these exist in includes/header.php or similar)
+function openModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'block';
+        // Add a class to body to prevent scrolling
+        document.body.classList.add('modal-open');
+    }
+}
+
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+        // Remove the class from body to allow scrolling
+        document.body.classList.remove('modal-open');
+    }
 }
 </script>
 
@@ -716,20 +766,174 @@ function submitAction(action, taskId) {
     margin-bottom: var(--spacing-lg);
 }
 
+/* Modālais logs */
+.modal {
+    display: none; /* Hidden by default */
+    position: fixed; /* Stay in place */
+    z-index: 1050; /* Sit on top */
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto; /* Enable scroll if needed */
+    background-color: rgba(0,0,0,0.5); /* Black w/ opacity */
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px); /* For Safari */
+}
+
+.modal-content {
+    background-color: #fefefe;
+    margin: 5% auto; /* 15% from the top and centered */
+    padding: 20px;
+    border: 1px solid #888;
+    width: 80%; /* Could be more or less, depending on screen size */
+    max-width: 600px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    position: relative;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 15px;
+}
+
+.modal-title {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 1.8rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    color: #aaa;
+}
+
+.modal-close:hover {
+    color: #333;
+}
+
+.modal-body {
+    padding-bottom: 20px;
+}
+
+.modal-body .form-group {
+    margin-bottom: 15px;
+}
+
+.modal-body .form-label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.modal-body .form-control {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.modal-body textarea.form-control {
+    resize: vertical;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+    margin-top: 15px;
+    gap: 10px;
+}
+
+.btn {
+    display: inline-block;
+    font-weight: 400;
+    text-align: center;
+    vertical-align: middle;
+    cursor: pointer;
+    border: 1px solid transparent;
+    padding: 0.375rem 0.75rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    border-radius: 0.25rem;
+    transition: color,background-color,border-color,box-shadow 0.15s ease-in-out;
+}
+
+.btn-secondary {
+    color: #6c757d;
+    background-color: #e9ecef;
+    border-color: #e9ecef;
+}
+
+.btn-success {
+    color: #fff;
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-info {
+    color: #fff;
+    background-color: #17a2b8;
+    border-color: #17a2b8;
+}
+
+.btn-warning {
+    color: #212529;
+    background-color: #ffc107;
+    border-color: #ffc107;
+}
+
+.btn-primary {
+    color: #fff;
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.btn-outline-success {
+    color: #28a745;
+    background-color: transparent;
+    border-color: #28a745;
+}
+
+.btn:hover {
+    opacity: 0.85;
+}
+
+
+/* Small screen adjustments for modal */
+@media (max-width: 768px) {
+    .modal-content {
+        margin: 10% auto;
+        width: 90%;
+    }
+}
+
 @media (max-width: 480px) {
     .task-footer {
         flex-direction: column;
         align-items: stretch;
     }
-    
+
     .task-actions {
         justify-content: center;
     }
-    
+
     .task-time {
         text-align: center;
     }
-    
+
     .stats-grid {
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     }

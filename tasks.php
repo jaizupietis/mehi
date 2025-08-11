@@ -271,14 +271,17 @@ include 'includes/header.php';
     <form method="GET" id="filterForm" class="filter-row">
         <div class="filter-col">
             <label for="meklēt" class="form-label">Meklēt</label>
-            <input 
-                type="text" 
-                id="meklēt" 
-                name="meklēt" 
-                class="form-control" 
-                placeholder="Meklēt uzdevumos..."
-                value="<?php echo htmlspecialchars($filters['meklēt']); ?>"
-            >
+            <div class="search-input-container">
+                <input 
+                    type="text" 
+                    id="meklēt" 
+                    name="meklēt" 
+                    class="form-control" 
+                    placeholder="Meklēt uzdevumos..."
+                    value="<?php echo htmlspecialchars($filters['meklēt']); ?>"
+                >
+                <span id="searchIndicator" class="search-indicator" style="display: none;">🔍</span>
+            </div>
         </div>
         
         <div class="filter-col">
@@ -539,25 +542,61 @@ include 'includes/header.php';
 </div>
 
 <script>
+// Globālie mainīgie
+let searchTimeout;
+let isFormSubmitting = false;
+
 // Inicializācija kad lapa ielādējusies
 document.addEventListener('DOMContentLoaded', function() {
     const form = document.getElementById('filterForm');
     const searchInput = document.getElementById('meklēt');
     
-    // Event listeners filtru elementiem (bez meklēšanas lauka)
+    if (!form || !searchInput) {
+        console.error('Form vai meklēšanas lauks nav atrasts');
+        return;
+    }
+    
+    // Event listeners filtru select elementiem
     document.querySelectorAll('#filterForm select').forEach(element => {
         element.addEventListener('change', function() {
-            form.submit();
+            if (!isFormSubmitting) {
+                isFormSubmitting = true;
+                form.submit();
+            }
         });
     });
     
     // Meklēšanas lauka debounce
-    let searchTimeout;
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
+        const searchValue = this.value.trim();
+        const indicator = document.getElementById('searchIndicator');
+        
+        // Rādīt meklēšanas indikatoru
+        if (searchValue.length > 0) {
+            indicator.style.display = 'block';
+        } else {
+            indicator.style.display = 'none';
+        }
+        
         searchTimeout = setTimeout(() => {
-            form.submit();
-        }, 500);
+            if (!isFormSubmitting) {
+                isFormSubmitting = true;
+                form.submit();
+            }
+        }, 800); // Palielināts laiks, lai lietotājs var pabeigt rakstīšanu
+    });
+    
+    // Enter taustiņa nospiešana meklēšanas laukā
+    searchInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            clearTimeout(searchTimeout);
+            if (!isFormSubmitting) {
+                isFormSubmitting = true;
+                form.submit();
+            }
+        }
     });
     
     // Filtru poga
@@ -565,9 +604,18 @@ document.addEventListener('DOMContentLoaded', function() {
     if (filterButton) {
         filterButton.addEventListener('click', function(e) {
             e.preventDefault();
-            form.submit();
+            clearTimeout(searchTimeout);
+            if (!isFormSubmitting) {
+                isFormSubmitting = true;
+                form.submit();
+            }
         });
     }
+    
+    // Atiestatīt formas stāvokli pēc lapas ielādes
+    setTimeout(() => {
+        isFormSubmitting = false;
+    }, 100);
 });
 
 // Uzdevuma detaļu skatīšana
@@ -620,12 +668,15 @@ function sortBy(column, direction) {
     const url = new URL(window.location);
     url.searchParams.set('sort', column);
     url.searchParams.set('order', direction);
+    
     // Saglabāt esošos filtrus
     const form = document.getElementById('filterForm');
-    const formData = new FormData(form);
-    for (let [key, value] of formData.entries()) {
-        if (value) {
-            url.searchParams.set(key, value);
+    if (form) {
+        const formData = new FormData(form);
+        for (let [key, value] of formData.entries()) {
+            if (value && value.trim() !== '') {
+                url.searchParams.set(key, value);
+            }
         }
     }
     window.location = url;
@@ -635,23 +686,6 @@ function sortBy(column, direction) {
 function clearFilters() {
     window.location.href = 'tasks.php';
 }
-// Filtru automātiska iesniegšana
-document.querySelectorAll('#filterForm select, #filterForm input').forEach(element => {
-    element.addEventListener('change', function() {
-        if (this.type !== 'text') {
-            document.getElementById('filterForm').submit();
-        }
-    });
-});
-
-// Meklēšanas lauka debounce
-let searchTimeout;
-document.getElementById('meklēt').addEventListener('input', function() {
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => {
-        document.getElementById('filterForm').submit();
-    }, 500);
-});
 </script>
 
 <style>
@@ -678,6 +712,31 @@ document.getElementById('meklēt').addEventListener('input', function() {
 
 .badge-info {
     background: var(--info-color);
+}
+
+.search-input-container {
+    position: relative;
+}
+
+.search-indicator {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--primary-color);
+    font-size: 14px;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+.form-control:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 0.2rem rgba(var(--primary-color-rgb, 0, 123, 255), 0.25);
 }
 </style>
 

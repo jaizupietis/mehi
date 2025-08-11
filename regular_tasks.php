@@ -14,7 +14,7 @@ $success = false;
 // Apstrādāt POST darbības
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'create_template') {
         $nosaukums = sanitizeInput($_POST['nosaukums'] ?? '');
         $apraksts = sanitizeInput($_POST['apraksts'] ?? '');
@@ -26,16 +26,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $periodicitate = sanitizeInput($_POST['periodicitate'] ?? '');
         $periodicitas_dienas = $_POST['periodicitas_dienas'] ?? [];
         $laiks = $_POST['laiks'] ?? '09:00';
-        
+
         // Validācija
         if (empty($nosaukums) || empty($apraksts) || empty($periodicitate)) {
             $errors[] = "Nosaukums, apraksts un periodicitāte ir obligāti.";
         }
-        
+
         if (!in_array($periodicitate, ['Katru dienu', 'Katru nedēļu', 'Reizi mēnesī', 'Reizi ceturksnī', 'Reizi gadā'])) {
             $errors[] = "Nederīga periodicitāte.";
         }
-        
+
         // Validēt periodicitātes dienas
         $json_dienas = null;
         if ($periodicitate === 'Katru nedēļu' && !empty($periodicitas_dienas)) {
@@ -55,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $json_dienas = json_encode(array_values($valid_days));
             }
         }
-        
+
         if (empty($errors)) {
             try {
                 $stmt = $pdo->prepare("
@@ -64,7 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      paredzamais_ilgums, periodicitate, periodicitas_dienas, laiks, izveidoja_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ");
-                
+
                 $stmt->execute([
                     $nosaukums,
                     $apraksts,
@@ -78,20 +78,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $laiks,
                     $currentUser['id']
                 ]);
-                
+
                 setFlashMessage('success', 'Regulārais uzdevums veiksmīgi izveidots!');
                 redirect('regular_tasks.php');
-                
+
             } catch (PDOException $e) {
                 $errors[] = "Kļūda izveidojot regulāro uzdevumu: " . $e->getMessage();
             }
         }
     }
-    
+
     if ($action === 'update_template' && isset($_POST['template_id'])) {
         $template_id = intval($_POST['template_id']);
         $aktīvs = isset($_POST['aktīvs']) ? 1 : 0;
-        
+
         try {
             $stmt = $pdo->prepare("UPDATE regularo_uzdevumu_sabloni SET aktīvs = ? WHERE id = ?");
             $stmt->execute([$aktīvs, $template_id]);
@@ -100,19 +100,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = "Kļūda atjaunojot statusu: " . $e->getMessage();
         }
     }
-    
+
 if ($action === 'delete_template' && isset($_POST['template_id'])) {
         $template_id = intval($_POST['template_id']);
         $force_delete = isset($_POST['force_delete']) ? true : false;
-        
+
         try {
             $pdo->beginTransaction();
-            
+
             // Pārbaudīt vai ir izveidoti uzdevumi no šī šablona
             $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE regulara_uzdevuma_id = ?");
             $stmt->execute([$template_id]);
             $usage_count = $stmt->fetchColumn();
-            
+
             if ($usage_count > 0 && !$force_delete) {
                 $errors[] = "Nevar dzēst šablonu, no kura ir izveidoti $usage_count uzdevumi. Izmantojiet 'Piespiedu dzēšana' vai deaktivizējiet šablonu.";
             } else {
@@ -123,26 +123,26 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                         WHERE uzdevuma_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
                     ");
                     $stmt->execute([$template_id]);
-                    
+
                     $stmt = $pdo->prepare("
                         DELETE FROM uzdevumu_vesture 
                         WHERE uzdevuma_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
                     ");
                     $stmt->execute([$template_id]);
-                    
+
                     $stmt = $pdo->prepare("
                         DELETE FROM faili 
                         WHERE tips = 'Uzdevums' AND saistitas_id IN (SELECT id FROM uzdevumi WHERE regulara_uzdevuma_id = ?)
                     ");
                     $stmt->execute([$template_id]);
-                    
+
                     $stmt = $pdo->prepare("DELETE FROM uzdevumi WHERE regulara_uzdevuma_id = ?");
                     $stmt->execute([$template_id]);
                 }
-                
+
                 $stmt = $pdo->prepare("DELETE FROM regularo_uzdevumu_sabloni WHERE id = ?");
                 $stmt->execute([$template_id]);
-                
+
                 $pdo->commit();
                 setFlashMessage('success', $force_delete && $usage_count > 0 ? 
                     "Regulārais uzdevums un visi saistītie uzdevumi ($usage_count gab.) dzēsti!" : 
@@ -153,10 +153,10 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
             $errors[] = "Kļūda dzēšot uzdevumu: " . $e->getMessage();
         }
     }
-    
+
     if ($action === 'execute_now' && isset($_POST['template_id'])) {
         $template_id = intval($_POST['template_id']);
-        
+
         try {
             // Iegūt šablona datus
             $stmt = $pdo->prepare("
@@ -165,12 +165,14 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
             ");
             $stmt->execute([$template_id]);
             $template = $stmt->fetch();
-            
+
             if ($template) {
-                // Atrast brīvāko mehāniķi
-                $mechanic_id = findLeastBusyMechanic();
-                
-                if ($mechanic_id) {
+                // Atrast brīvāko mehāniķi (normalizēt laiku)
+                $template_time = substr($template['laiks'], 0, 5); // Noņemt sekundes ja ir
+                $mechanic_data = findLeastBusyMechanic(date('Y-m-d'), $template_time);
+
+                if ($mechanic_data) {
+                    $mechanic_id = $mechanic_data['id'];
                     // Izveidot uzdevumu
                     $stmt = $pdo->prepare("
                         INSERT INTO uzdevumi 
@@ -178,7 +180,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                          prioritate, piešķirts_id, izveidoja_id, paredzamais_ilgums, regulara_uzdevuma_id)
                         VALUES (?, ?, 'Regulārais', ?, ?, ?, ?, ?, ?, ?, ?)
                     ");
-                    
+
                     $stmt->execute([
                         $template['nosaukums'],
                         $template['apraksts'],
@@ -191,9 +193,9 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                         $template['paredzamais_ilgums'],
                         $template_id
                     ]);
-                    
+
                     $task_id = $pdo->lastInsertId();
-                    
+
                     // Pievienot vēsturi
                     $stmt = $pdo->prepare("
                         INSERT INTO uzdevumu_vesture 
@@ -201,7 +203,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                         VALUES (?, NULL, 'Jauns', 'Regulārais uzdevums izveidots manuāli', ?)
                     ");
                     $stmt->execute([$task_id, $currentUser['id']]);
-                    
+
                     // Paziņot mehāniķim
                     createNotification(
                         $mechanic_id,
@@ -211,7 +213,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                         'Uzdevums',
                         $task_id
                     );
-                    
+
                     setFlashMessage('success', 'Regulārais uzdevums izveidots un piešķirts!');
                 } else {
                     $errors[] = "Nav pieejamu mehāniķu uzdevuma piešķiršanai.";
@@ -223,7 +225,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
             $errors[] = "Kļūda izveidojot uzdevumu: " . $e->getMessage();
         }
     }
-    
+
     if ($action === 'edit_template' && isset($_POST['template_id'])) {
         $template_id = intval($_POST['template_id']);
         $nosaukums = sanitizeInput($_POST['nosaukums'] ?? '');
@@ -237,12 +239,12 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
         $periodicitas_dienas = $_POST['periodicitas_dienas'] ?? [];
         $laiks = $_POST['laiks'] ?? '09:00';
         $aktīvs = isset($_POST['aktīvs']) ? 1 : 0;
-        
+
         // Validācija
         if (empty($nosaukums) || empty($apraksts) || empty($periodicitate)) {
             $errors[] = "Nosaukums, apraksts un periodicitāte ir obligāti.";
         }
-        
+
         // Validēt periodicitātes dienas
         $json_dienas = null;
         if ($periodicitate === 'Katru nedēļu' && !empty($periodicitas_dienas)) {
@@ -260,7 +262,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                 $json_dienas = json_encode(array_values($valid_days));
             }
         }
-        
+
         if (empty($errors)) {
             try {
                 $stmt = $pdo->prepare("
@@ -270,7 +272,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                         periodicitate = ?, periodicitas_dienas = ?, laiks = ?, aktīvs = ?
                     WHERE id = ?
                 ");
-                
+
                 $stmt->execute([
                     $nosaukums,
                     $apraksts,
@@ -285,7 +287,7 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
                     $aktīvs,
                     $template_id
                 ]);
-                
+
                 setFlashMessage('success', 'Regulārais uzdevums atjaunots!');
             } catch (PDOException $e) {
                 $errors[] = "Kļūda atjaunojot regulāro uzdevumu: " . $e->getMessage();
@@ -294,13 +296,86 @@ if ($action === 'delete_template' && isset($_POST['template_id'])) {
     }
 }
 
-// Funkcija brīvākā mehāniķa atrašanai
-function findLeastBusyMechanic() {
+// Funkcija brīvākā mehāniķa atrašanai (ņemot vērā darba grafiku un maiņu laikus)
+function findLeastBusyMechanic($uzdevuma_datums = null, $uzdevuma_laiks = null) {
     global $pdo;
-    
+
+    if (!$uzdevuma_datums) {
+        $uzdevuma_datums = date('Y-m-d');
+    }
+
+    if (!$uzdevuma_laiks) {
+        $uzdevuma_laiks = date('H:i');
+    }
+
     try {
+        // Noteikt kura maiņa ir nepieciešama pēc laika
+        $nepieciešamā_maiņa = null;
+        if ($uzdevuma_laiks >= '07:00' && $uzdevuma_laiks <= '16:00') {
+            $nepieciešamā_maiņa = 'R'; // Rīta maiņa (07:00 - 16:00)
+        } elseif (($uzdevuma_laiks >= '16:01' && $uzdevuma_laiks <= '23:59') || 
+                  ($uzdevuma_laiks >= '00:00' && $uzdevuma_laiks <= '01:00')) {
+            $nepieciešamā_maiņa = 'V'; // Vakara maiņa (16:01 - 01:00)
+        }
+
+        // Vispirms meklēt mehāniķus ar atbilstošo darba grafiku
+        if ($nepieciešamā_maiņa) {
+            $stmt = $pdo->prepare("
+                SELECT l.id, 
+                       CONCAT(l.vards, ' ', l.uzvards) as pilns_vards,
+                       COUNT(u.id) as aktīvo_uzdevumu_skaits,
+                       SUM(CASE WHEN u.prioritate = 'Kritiska' THEN 3 
+                                WHEN u.prioritate = 'Augsta' THEN 2 
+                                WHEN u.prioritate = 'Vidēja' THEN 1 
+                                ELSE 0 END) as prioritātes_svars,
+                       g.maina as darba_maina
+                FROM lietotaji l
+                LEFT JOIN uzdevumi u ON l.id = u.piešķirts_id AND u.statuss IN ('Jauns', 'Procesā')
+                INNER JOIN darba_grafiks g ON l.id = g.lietotaja_id AND g.datums = ?
+                WHERE l.loma = 'Mehāniķis' AND l.statuss = 'Aktīvs'
+                AND g.maina = ?
+                GROUP BY l.id, g.maina
+                ORDER BY aktīvo_uzdevumu_skaits ASC, prioritātes_svars ASC, l.id ASC
+                LIMIT 1
+            ");
+            $stmt->execute([$uzdevuma_datums, $nepieciešamā_maiņa]);
+            $result = $stmt->fetch();
+
+            if ($result) {
+                return $result;
+            }
+        }
+
+        // Ja nav mehāniķu ar konkrētu maiņu, meklēt mehāniķus, kas strādā šajā datumā
+        $stmt = $pdo->prepare("
+            SELECT l.id, 
+                   CONCAT(l.vards, ' ', l.uzvards) as pilns_vards,
+                   COUNT(u.id) as aktīvo_uzdevumu_skaits,
+                   SUM(CASE WHEN u.prioritate = 'Kritiska' THEN 3 
+                            WHEN u.prioritate = 'Augsta' THEN 2 
+                            WHEN u.prioritate = 'Vidēja' THEN 1 
+                            ELSE 0 END) as prioritātes_svars,
+                   g.maina as darba_maina
+            FROM lietotaji l
+            LEFT JOIN uzdevumi u ON l.id = u.piešķirts_id AND u.statuss IN ('Jauns', 'Procesā')
+            INNER JOIN darba_grafiks g ON l.id = g.lietotaja_id AND g.datums = ?
+            WHERE l.loma = 'Mehāniķis' AND l.statuss = 'Aktīvs'
+            AND g.maina IN ('R', 'V')
+            GROUP BY l.id, g.maina
+            ORDER BY aktīvo_uzdevumu_skaits ASC, prioritātes_svars ASC, l.id ASC
+            LIMIT 1
+        ");
+        $stmt->execute([$uzdevuma_datums]);
+        $result = $stmt->fetch();
+
+        if ($result) {
+            return $result;
+        }
+
+        // Ja nav mehāniķu ar grafiku, iegūt jebkuru aktīvu mehāniķi
         $stmt = $pdo->query("
             SELECT l.id, 
+                   CONCAT(l.vards, ' ', l.uzvards) as pilns_vards,
                    COUNT(u.id) as aktīvo_uzdevumu_skaits,
                    SUM(CASE WHEN u.prioritate = 'Kritiska' THEN 3 
                             WHEN u.prioritate = 'Augsta' THEN 2 
@@ -313,11 +388,11 @@ function findLeastBusyMechanic() {
             ORDER BY aktīvo_uzdevumu_skaits ASC, prioritātes_svars ASC, l.id ASC
             LIMIT 1
         ");
-        
         $result = $stmt->fetch();
-        return $result ? $result['id'] : null;
+
+        return $result;
     } catch (PDOException $e) {
-        error_log("Kļūda meklējot brīvāko mehāniķi: " . $e->getMessage());
+        error_log("Kļūda meklējot brīvāko mehāniķi datumam $uzdevuma_datums: " . $e->getMessage());
         return null;
     }
 }
@@ -327,15 +402,15 @@ try {
     // Vietas
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
-    
+
     // Iekārtas
     $stmt = $pdo->query("SELECT id, nosaukums, vietas_id FROM iekartas WHERE aktīvs = 1 ORDER BY nosaukums");
     $iekartas = $stmt->fetchAll();
-    
+
     // Kategorijas
     $stmt = $pdo->query("SELECT id, nosaukums FROM uzdevumu_kategorijas WHERE aktīvs = 1 ORDER BY nosaukums");
     $kategorijas = $stmt->fetchAll();
-    
+
     // Regulārie uzdevumi
     $stmt = $pdo->query("
         SELECT r.*, 
@@ -354,7 +429,7 @@ try {
         ORDER BY r.aktīvs DESC, r.prioritate DESC, r.izveidots DESC
     ");
     $regular_tasks = $stmt->fetchAll();
-    
+
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot datus: " . $e->getMessage();
     $vietas = $iekartas = $kategorijas = $regular_tasks = [];
@@ -471,20 +546,20 @@ include 'includes/header.php';
                                     <div class="btn-group">
                                         <button onclick="viewTemplate(<?php echo htmlspecialchars(json_encode($task)); ?>)" 
                                                 class="btn btn-sm btn-info" title="Skatīt detaļas">👁</button>
-                                        
+
                                         <button onclick="editTemplate(<?php echo htmlspecialchars(json_encode($task)); ?>)" 
                                                 class="btn btn-sm btn-warning" title="Rediģēt">✏</button>
-                                        
+
                                         <?php if ($task['aktīvs']): ?>
                                             <button onclick="executeNow(<?php echo $task['id']; ?>)" 
                                                     class="btn btn-sm btn-success" title="Izveidot uzdevumu tagad">▶</button>
                                         <?php endif; ?>
-                                        
+
                                         <button onclick="toggleTemplate(<?php echo $task['id']; ?>, <?php echo $task['aktīvs'] ? 'false' : 'true'; ?>)" 
                                                 class="btn btn-sm btn-secondary" title="<?php echo $task['aktīvs'] ? 'Deaktivizēt' : 'Aktivizēt'; ?>">
                                             <?php echo $task['aktīvs'] ? '⏸' : '▶'; ?>
                                         </button>
-                                        
+
                                         <?php if ($task['izveidoto_uzdevumu_skaits'] == 0): ?>
                                             <button onclick="confirmAction('Vai tiešām vēlaties dzēst šo regulāro uzdevumu?', function() { deleteTemplate(<?php echo $task['id']; ?>); })" 
                                                     class="btn btn-sm btn-danger" title="Dzēst">🗑</button>
@@ -512,7 +587,7 @@ include 'includes/header.php';
         <div class="modal-body">
             <form id="createTemplateForm" method="POST">
                 <input type="hidden" name="action" value="create_template">
-                
+
                 <div class="row">
                     <div class="col-md-8">
                         <div class="form-group">
@@ -532,12 +607,12 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="apraksts" class="form-label">Uzdevuma apraksts *</label>
                     <textarea id="apraksts" name="apraksts" class="form-control" rows="4" required></textarea>
                 </div>
-                
+
                 <div class="row">
                     <div class="col-md-4">
                         <div class="form-group">
@@ -579,7 +654,7 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row">
                     <div class="col-md-4">
                         <div class="form-group">
@@ -607,7 +682,7 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Nedēļas dienu izvēle -->
                 <div id="weekDaysSection" class="form-group" style="display: none;">
                     <label class="form-label">Nedēļas dienas</label>
@@ -621,7 +696,7 @@ include 'includes/header.php';
                         <label><input type="checkbox" name="periodicitas_dienas[]" value="7"> Svētdiena</label>
                     </div>
                 </div>
-                
+
                 <!-- Mēneša dienu izvēle -->
                 <div id="monthDaysSection" class="form-group" style="display: none;">
                     <label class="form-label">Mēneša dienas</label>
@@ -651,7 +726,7 @@ include 'includes/header.php';
             <form id="editTemplateForm" method="POST">
                 <input type="hidden" name="action" value="edit_template">
                 <input type="hidden" name="template_id" id="edit_template_id">
-                
+
                 <div class="row">
                     <div class="col-md-8">
                         <div class="form-group">
@@ -671,12 +746,12 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="edit_apraksts" class="form-label">Uzdevuma apraksts *</label>
                     <textarea id="edit_apraksts" name="apraksts" class="form-control" rows="4" required></textarea>
                 </div>
-                
+
                 <div class="row">
                     <div class="col-md-4">
                         <div class="form-group">
@@ -718,7 +793,7 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row">
                     <div class="col-md-4">
                         <div class="form-group">
@@ -746,7 +821,7 @@ include 'includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Nedēļas dienu izvēle -->
                 <div id="editWeekDaysSection" class="form-group" style="display: none;">
                     <label class="form-label">Nedēļas dienas</label>
@@ -760,7 +835,7 @@ include 'includes/header.php';
                         <label><input type="checkbox" name="periodicitas_dienas[]" value="7"> Svētdiena</label>
                     </div>
                 </div>
-                
+
                 <!-- Mēneša dienu izvēle -->
                 <div id="editMonthDaysSection" class="form-group" style="display: none;">
                     <label class="form-label">Mēneša dienas</label>
@@ -770,7 +845,7 @@ include 'includes/header.php';
                         <?php endfor; ?>
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label class="form-label">
                         <input type="checkbox" id="edit_aktīvs" name="aktīvs"> Aktīvs
@@ -807,13 +882,13 @@ function updateIekartas() {
     const vietasSelect = document.getElementById('vietas_id');
     const iekartasSelect = document.getElementById('iekartas_id');
     const selectedVieta = vietasSelect.value;
-    
+
     Array.from(iekartasSelect.options).forEach(option => {
         if (option.value === '') {
             option.style.display = 'block';
             return;
         }
-        
+
         const iekartaVieta = option.getAttribute('data-vieta');
         if (!selectedVieta || iekartaVieta === selectedVieta) {
             option.style.display = 'block';
@@ -821,7 +896,7 @@ function updateIekartas() {
             option.style.display = 'none';
         }
     });
-    
+
     if (selectedVieta && iekartasSelect.value) {
         const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
         const selectedIekartaVieta = selectedOption.getAttribute('data-vieta');
@@ -836,13 +911,13 @@ function updateEditIekartas() {
     const vietasSelect = document.getElementById('edit_vietas_id');
     const iekartasSelect = document.getElementById('edit_iekartas_id');
     const selectedVieta = vietasSelect.value;
-    
+
     Array.from(iekartasSelect.options).forEach(option => {
         if (option.value === '') {
             option.style.display = 'block';
             return;
         }
-        
+
         const iekartaVieta = option.getAttribute('data-vieta');
         if (!selectedVieta || iekartaVieta === selectedVieta) {
             option.style.display = 'block';
@@ -850,7 +925,7 @@ function updateEditIekartas() {
             option.style.display = 'none';
         }
     });
-    
+
     if (selectedVieta && iekartasSelect.value) {
         const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
         const selectedIekartaVieta = selectedOption.getAttribute('data-vieta');
@@ -865,15 +940,15 @@ function updatePeriodicityOptions() {
     const periodicitate = document.getElementById('periodicitate').value;
     const weekDaysSection = document.getElementById('weekDaysSection');
     const monthDaysSection = document.getElementById('monthDaysSection');
-    
+
     // Paslēpt visas sekcijas
     weekDaysSection.style.display = 'none';
     monthDaysSection.style.display = 'none';
-    
+
     // Notīrīt izvēles
     weekDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
     monthDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-    
+
     // Parādīt attiecīgo sekciju
     if (periodicitate === 'Katru nedēļu') {
         weekDaysSection.style.display = 'block';
@@ -887,15 +962,15 @@ function updateEditPeriodicityOptions() {
     const periodicitate = document.getElementById('edit_periodicitate').value;
     const weekDaysSection = document.getElementById('editWeekDaysSection');
     const monthDaysSection = document.getElementById('editMonthDaysSection');
-    
+
     // Paslēpt visas sekcijas
     weekDaysSection.style.display = 'none';
     monthDaysSection.style.display = 'none';
-    
+
     // Notīrīt izvēles
     weekDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
     monthDaysSection.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-    
+
     // Parādīt attiecīgo sekciju
     if (periodicitate === 'Katru nedēļu') {
         weekDaysSection.style.display = 'block';
@@ -907,7 +982,7 @@ function updateEditPeriodicityOptions() {
 // Šablona skatīšana
 function viewTemplate(template) {
     const details = document.getElementById('templateDetails');
-    
+
     let periodicityText = template.periodicitate;
     if (template.periodicitas_dienas) {
         const dienas = JSON.parse(template.periodicitas_dienas);
@@ -918,7 +993,7 @@ function viewTemplate(template) {
             periodicityText += ': ' + dienas.map(d => d + '.').join(', ') + ' datums';
         }
     }
-    
+
     details.innerHTML = `
         <div class="template-details">
             <div class="row">
@@ -946,13 +1021,13 @@ function viewTemplate(template) {
                     </div>
                 </div>
             </div>
-            
+
             <div class="template-schedule">
                 <h5>Izpildes grafiks</h5>
                 <div><strong>Periodicitāte:</strong> ${periodicityText}</div>
                 <div><strong>Izveidošanas laiks:</strong> ${template.laiks}</div>
             </div>
-            
+
             <div class="template-stats">
                 <h5>Statistika</h5>
                 <div><strong>Izveidoti uzdevumi:</strong> ${template.izveidoto_uzdevumu_skaits}</div>
@@ -964,7 +1039,7 @@ function viewTemplate(template) {
             </div>
         </div>
     `;
-    
+
     openModal('viewTemplateModal');
 }
 
@@ -981,19 +1056,19 @@ function editTemplate(template) {
     document.getElementById('edit_periodicitate').value = template.periodicitate;
     document.getElementById('edit_laiks').value = template.laiks;
     document.getElementById('edit_aktīvs').checked = template.aktīvs == 1;
-    
+
     // Atjaunot periodicitātes opcijas
     updateEditPeriodicityOptions();
-    
+
     // Iestatīt periodicitātes dienas
     if (template.periodicitas_dienas) {
         const dienas = JSON.parse(template.periodicitas_dienas);
         const checkboxes = document.querySelectorAll('#editWeekDaysSection input[type="checkbox"], #editMonthDaysSection input[type="checkbox"]');
         checkboxes.forEach(cb => {
-            cb.checked = dianas.includes(parseInt(cb.value));
+            cb.checked = dienas.includes(parseInt(cb.value));
         });
     }
-    
+
     updateEditIekartas();
     openModal('editTemplateModal');
 }
@@ -1003,17 +1078,17 @@ function toggleTemplate(templateId, activate) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.style.display = 'none';
-    
+
     const actionInput = document.createElement('input');
     actionInput.type = 'hidden';
     actionInput.name = 'action';
     actionInput.value = 'update_template';
-    
+
     const templateInput = document.createElement('input');
     templateInput.type = 'hidden';
     templateInput.name = 'template_id';
     templateInput.value = templateId;
-    
+
     if (activate === 'true') {
         const activeInput = document.createElement('input');
         activeInput.type = 'hidden';
@@ -1021,10 +1096,10 @@ function toggleTemplate(templateId, activate) {
         activeInput.value = '1';
         form.appendChild(activeInput);
     }
-    
+
     form.appendChild(actionInput);
     form.appendChild(templateInput);
-    
+
     document.body.appendChild(form);
     form.submit();
 }
@@ -1035,20 +1110,20 @@ function executeNow(templateId) {
         const form = document.createElement('form');
         form.method = 'POST';
         form.style.display = 'none';
-        
+
         const actionInput = document.createElement('input');
         actionInput.type = 'hidden';
         actionInput.name = 'action';
         actionInput.value = 'execute_now';
-        
+
         const templateInput = document.createElement('input');
         templateInput.type = 'hidden';
         templateInput.name = 'template_id';
         templateInput.value = templateId;
-        
+
         form.appendChild(actionInput);
         form.appendChild(templateInput);
-        
+
         document.body.appendChild(form);
         form.submit();
     }
@@ -1059,20 +1134,20 @@ function deleteTemplate(templateId) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.style.display = 'none';
-    
+
     const actionInput = document.createElement('input');
     actionInput.type = 'hidden';
     actionInput.name = 'action';
     actionInput.value = 'delete_template';
-    
+
     const templateInput = document.createElement('input');
     templateInput.type = 'hidden';
     templateInput.name = 'template_id';
     templateInput.value = templateId;
-    
+
     form.appendChild(actionInput);
     form.appendChild(templateInput);
-    
+
     document.body.appendChild(form);
     form.submit();
 }
@@ -1153,19 +1228,76 @@ function deleteTemplate(templateId) {
     min-width: 300px;
 }
 
+/* Modālo logu uzlabojumi */
+.modal-content {
+    max-height: 95vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-body {
+    overflow-y: auto;
+    max-height: calc(95vh - 120px);
+    flex: 1;
+}
+
+.modal-footer {
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    background: white;
+    border-top: 1px solid var(--gray-300);
+    z-index: 10;
+}
+
+#editTemplateModal .modal-content {
+    max-width: 900px;
+}
+
+#createTemplateModal .modal-content {
+    max-width: 900px;
+}
+
 @media (max-width: 768px) {
     .row {
         flex-direction: column;
     }
-    
+
     .col-md-4,
     .col-md-8 {
         width: 100%;
         flex: none;
     }
-    
+
     .checkbox-group {
         grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    }
+    
+    .modal-content {
+        max-height: 100vh;
+        max-width: 100vw !important;
+        margin: 0;
+        border-radius: 0;
+    }
+    
+    .modal-body {
+        max-height: calc(100vh - 120px);
+        padding: var(--spacing-md);
+    }
+}
+
+@media (max-width: 480px) {
+    .checkbox-group {
+        grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+        gap: var(--spacing-xs);
+    }
+    
+    .checkbox-group label {
+        font-size: 12px;
+    }
+    
+    .modal-body {
+        padding: var(--spacing-sm);
     }
 }
 </style>

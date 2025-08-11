@@ -1,3 +1,4 @@
+
 <?php
 require_once 'config.php';
 
@@ -10,6 +11,9 @@ $pageHeader = 'Sistēmas iestatījumi';
 $currentUser = getCurrentUser();
 $errors = [];
 $success = false;
+
+// Noteikt aktīvo ciļni
+$active_tab = $_GET['tab'] ?? $_POST['active_tab'] ?? 'vietas';
 
 // Apstrādāt POST darbības
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -27,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("INSERT INTO vietas (nosaukums, apraksts) VALUES (?, ?)");
                 $stmt->execute([$nosaukums, $apraksts]);
                 setFlashMessage('success', 'Vieta veiksmīgi pievienota!');
+                $active_tab = 'vietas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda pievienojot vietu: " . $e->getMessage();
             }
@@ -46,6 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("UPDATE vietas SET nosaukums = ?, apraksts = ?, aktīvs = ? WHERE id = ?");
                 $stmt->execute([$nosaukums, $apraksts, $aktīvs, $vieta_id]);
                 setFlashMessage('success', 'Vieta veiksmīgi atjaunota!');
+                $active_tab = 'vietas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda atjaunojot vietu: " . $e->getMessage();
             }
@@ -73,8 +79,98 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$vieta_id]);
                 setFlashMessage('success', 'Vieta veiksmīgi dzēsta!');
             }
+            $active_tab = 'vietas';
         } catch (PDOException $e) {
             $errors[] = "Kļūda dzēšot vietu: " . $e->getMessage();
+        }
+    }
+    
+    // Masveida vietu dzēšana
+    if ($action === 'bulk_delete_vietas' && isset($_POST['selected_vietas'])) {
+        $selected_ids = array_map('intval', $_POST['selected_vietas']);
+        $deleted_count = 0;
+        $error_count = 0;
+        
+        foreach ($selected_ids as $vieta_id) {
+            try {
+                // Pārbaudīt izmantošanu
+                $stmt = $pdo->prepare("
+                    SELECT 
+                        (SELECT COUNT(*) FROM uzdevumi WHERE vietas_id = ?) as uzdevumi,
+                        (SELECT COUNT(*) FROM problemas WHERE vietas_id = ?) as problemas,
+                        (SELECT COUNT(*) FROM iekartas WHERE vietas_id = ?) as iekartas
+                ");
+                $stmt->execute([$vieta_id, $vieta_id, $vieta_id]);
+                $usage = $stmt->fetch();
+                
+                if ($usage['uzdevumi'] == 0 && $usage['problemas'] == 0 && $usage['iekartas'] == 0) {
+                    $stmt = $pdo->prepare("DELETE FROM vietas WHERE id = ?");
+                    $stmt->execute([$vieta_id]);
+                    $deleted_count++;
+                } else {
+                    $error_count++;
+                }
+            } catch (PDOException $e) {
+                $error_count++;
+            }
+        }
+        
+        if ($deleted_count > 0) {
+            setFlashMessage('success', "Dzēstas $deleted_count vietas.");
+        }
+        if ($error_count > 0) {
+            $errors[] = "$error_count vietas nevarēja dzēst (tiek izmantotas citās vietās).";
+        }
+        $active_tab = 'vietas';
+    }
+    
+    // CSV vietu imports
+    if ($action === 'import_vietas' && isset($_FILES['csv_file'])) {
+        try {
+            $file = $_FILES['csv_file'];
+            if ($file['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('Faila augšupielādes kļūda.');
+            }
+            
+            $handle = fopen($file['tmp_name'], 'r');
+            if (!$handle) {
+                throw new Exception('Nevarēja atvērt failu.');
+            }
+            
+            $imported_count = 0;
+            $line_number = 0;
+            
+            while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+                $line_number++;
+                
+                // Izlaist galveni vai tukšas rindas
+                if ($line_number === 1 && (strtolower($data[0]) === 'nosaukums' || strtolower($data[0]) === 'name')) {
+                    continue;
+                }
+                
+                if (empty(trim($data[0]))) {
+                    continue;
+                }
+                
+                $nosaukums = sanitizeInput(trim($data[0]));
+                $apraksts = isset($data[1]) ? sanitizeInput(trim($data[1])) : '';
+                
+                // Pārbaudīt vai vieta jau eksistē
+                $stmt = $pdo->prepare("SELECT id FROM vietas WHERE nosaukums = ?");
+                $stmt->execute([$nosaukums]);
+                if (!$stmt->fetch()) {
+                    $stmt = $pdo->prepare("INSERT INTO vietas (nosaukums, apraksts) VALUES (?, ?)");
+                    $stmt->execute([$nosaukums, $apraksts]);
+                    $imported_count++;
+                }
+            }
+            
+            fclose($handle);
+            setFlashMessage('success', "Importētas $imported_count vietas.");
+            $active_tab = 'vietas';
+            
+        } catch (Exception $e) {
+            $errors[] = "Importa kļūda: " . $e->getMessage();
         }
     }
     
@@ -88,9 +184,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = "Iekārtas nosaukums ir obligāts.";
         } else {
             try {
+                $vietas_id = $vietas_id > 0 ? $vietas_id : null;
+                
                 $stmt = $pdo->prepare("INSERT INTO iekartas (nosaukums, apraksts, vietas_id) VALUES (?, ?, ?)");
-                $stmt->execute([$nosaukums, $apraksts, $vietas_id ?: null]);
+                $stmt->execute([$nosaukums, $apraksts, $vietas_id]);
+                
                 setFlashMessage('success', 'Iekārta veiksmīgi pievienota!');
+                $active_tab = 'iekartas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda pievienojot iekārtu: " . $e->getMessage();
             }
@@ -108,9 +208,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = "Iekārtas nosaukums ir obligāts.";
         } else {
             try {
+                $vietas_id = $vietas_id > 0 ? $vietas_id : null;
+                
                 $stmt = $pdo->prepare("UPDATE iekartas SET nosaukums = ?, apraksts = ?, vietas_id = ?, aktīvs = ? WHERE id = ?");
-                $stmt->execute([$nosaukums, $apraksts, $vietas_id ?: null, $aktīvs, $iekarta_id]);
+                $stmt->execute([$nosaukums, $apraksts, $vietas_id, $aktīvs, $iekarta_id]);
+                
                 setFlashMessage('success', 'Iekārta veiksmīgi atjaunota!');
+                $active_tab = 'iekartas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda atjaunojot iekārtu: " . $e->getMessage();
             }
@@ -137,8 +241,106 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$iekarta_id]);
                 setFlashMessage('success', 'Iekārta veiksmīgi dzēsta!');
             }
+            $active_tab = 'iekartas';
         } catch (PDOException $e) {
             $errors[] = "Kļūda dzēšot iekārtu: " . $e->getMessage();
+        }
+    }
+    
+    // Masveida iekārtu dzēšana
+    if ($action === 'bulk_delete_iekartas' && isset($_POST['selected_iekartas'])) {
+        $selected_ids = array_map('intval', $_POST['selected_iekartas']);
+        $deleted_count = 0;
+        $error_count = 0;
+        
+        foreach ($selected_ids as $iekarta_id) {
+            try {
+                $stmt = $pdo->prepare("
+                    SELECT 
+                        (SELECT COUNT(*) FROM uzdevumi WHERE iekartas_id = ?) as uzdevumi,
+                        (SELECT COUNT(*) FROM problemas WHERE iekartas_id = ?) as problemas
+                ");
+                $stmt->execute([$iekarta_id, $iekarta_id]);
+                $usage = $stmt->fetch();
+                
+                if ($usage['uzdevumi'] == 0 && $usage['problemas'] == 0) {
+                    $stmt = $pdo->prepare("DELETE FROM iekartas WHERE id = ?");
+                    $stmt->execute([$iekarta_id]);
+                    $deleted_count++;
+                } else {
+                    $error_count++;
+                }
+            } catch (PDOException $e) {
+                $error_count++;
+            }
+        }
+        
+        if ($deleted_count > 0) {
+            setFlashMessage('success', "Dzēstas $deleted_count iekārtas.");
+        }
+        if ($error_count > 0) {
+            $errors[] = "$error_count iekārtas nevarēja dzēst (tiek izmantotas).";
+        }
+        $active_tab = 'iekartas';
+    }
+    
+    // CSV iekārtu imports
+    if ($action === 'import_iekartas' && isset($_FILES['csv_file'])) {
+        try {
+            $file = $_FILES['csv_file'];
+            if ($file['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('Faila augšupielādes kļūda.');
+            }
+            
+            $handle = fopen($file['tmp_name'], 'r');
+            if (!$handle) {
+                throw new Exception('Nevarēja atvērt failu.');
+            }
+            
+            $imported_count = 0;
+            $line_number = 0;
+            
+            while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+                $line_number++;
+                
+                if ($line_number === 1 && (strtolower($data[0]) === 'nosaukums' || strtolower($data[0]) === 'name')) {
+                    continue;
+                }
+                
+                if (empty(trim($data[0]))) {
+                    continue;
+                }
+                
+                $nosaukums = sanitizeInput(trim($data[0]));
+                $apraksts = isset($data[1]) ? sanitizeInput(trim($data[1])) : '';
+                $vietas_nosaukums = isset($data[2]) ? sanitizeInput(trim($data[2])) : '';
+                
+                $vietas_id = null;
+                if (!empty($vietas_nosaukums)) {
+                    $stmt = $pdo->prepare("SELECT id FROM vietas WHERE nosaukums = ?");
+                    $stmt->execute([$vietas_nosaukums]);
+                    $vieta = $stmt->fetch();
+                    if ($vieta) {
+                        $vietas_id = $vieta['id'];
+                    }
+                }
+                
+                // Pārbaudīt vai iekārta jau eksistē
+                $stmt = $pdo->prepare("SELECT id FROM iekartas WHERE nosaukums = ?");
+                $stmt->execute([$nosaukums]);
+                if (!$stmt->fetch()) {
+                    $stmt = $pdo->prepare("INSERT INTO iekartas (nosaukums, apraksts, vietas_id) VALUES (?, ?, ?)");
+                    $stmt->execute([$nosaukums, $apraksts, $vietas_id]);
+                    $imported_count++;
+                }
+            }
+            
+            fclose($handle);
+            setFlashMessage('success', "Importētas $imported_count iekārtas.");
+            $active_tab = 'iekartas';
+            
+        } catch (Exception $e) {
+            $errors[] = "Importa kļūda: " . $e->getMessage();
         }
     }
     
@@ -154,6 +356,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("INSERT INTO uzdevumu_kategorijas (nosaukums, apraksts) VALUES (?, ?)");
                 $stmt->execute([$nosaukums, $apraksts]);
                 setFlashMessage('success', 'Kategorija veiksmīgi pievienota!');
+                $active_tab = 'kategorijas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda pievienojot kategoriju: " . $e->getMessage();
             }
@@ -173,6 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("UPDATE uzdevumu_kategorijas SET nosaukums = ?, apraksts = ?, aktīvs = ? WHERE id = ?");
                 $stmt->execute([$nosaukums, $apraksts, $aktīvs, $kategorija_id]);
                 setFlashMessage('success', 'Kategorija veiksmīgi atjaunota!');
+                $active_tab = 'kategorijas';
             } catch (PDOException $e) {
                 $errors[] = "Kļūda atjaunojot kategoriju: " . $e->getMessage();
             }
@@ -195,9 +399,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$kategorija_id]);
                 setFlashMessage('success', 'Kategorija veiksmīgi dzēsta!');
             }
+            $active_tab = 'kategorijas';
         } catch (PDOException $e) {
             $errors[] = "Kļūda dzēšot kategoriju: " . $e->getMessage();
         }
+    }
+    
+    // Masveida kategoriju dzēšana
+    if ($action === 'bulk_delete_kategorijas' && isset($_POST['selected_kategorijas'])) {
+        $selected_ids = array_map('intval', $_POST['selected_kategorijas']);
+        $deleted_count = 0;
+        $error_count = 0;
+        
+        foreach ($selected_ids as $kategorija_id) {
+            try {
+                $stmt = $pdo->prepare("SELECT COUNT(*) FROM uzdevumi WHERE kategorijas_id = ?");
+                $stmt->execute([$kategorija_id]);
+                $usage = $stmt->fetchColumn();
+                
+                if ($usage == 0) {
+                    $stmt = $pdo->prepare("DELETE FROM uzdevumu_kategorijas WHERE id = ?");
+                    $stmt->execute([$kategorija_id]);
+                    $deleted_count++;
+                } else {
+                    $error_count++;
+                }
+            } catch (PDOException $e) {
+                $error_count++;
+            }
+        }
+        
+        if ($deleted_count > 0) {
+            setFlashMessage('success', "Dzēstas $deleted_count kategorijas.");
+        }
+        if ($error_count > 0) {
+            $errors[] = "$error_count kategorijas nevarēja dzēst (tiek izmantotas).";
+        }
+        $active_tab = 'kategorijas';
+    }
+    
+    // CSV kategoriju imports
+    if ($action === 'import_kategorijas' && isset($_FILES['csv_file'])) {
+        try {
+            $file = $_FILES['csv_file'];
+            if ($file['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('Faila augšupielādes kļūda.');
+            }
+            
+            $handle = fopen($file['tmp_name'], 'r');
+            if (!$handle) {
+                throw new Exception('Nevarēja atvērt failu.');
+            }
+            
+            $imported_count = 0;
+            $line_number = 0;
+            
+            while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+                $line_number++;
+                
+                if ($line_number === 1 && (strtolower($data[0]) === 'nosaukums' || strtolower($data[0]) === 'name')) {
+                    continue;
+                }
+                
+                if (empty(trim($data[0]))) {
+                    continue;
+                }
+                
+                $nosaukums = sanitizeInput(trim($data[0]));
+                $apraksts = isset($data[1]) ? sanitizeInput(trim($data[1])) : '';
+                
+                // Pārbaudīt vai kategorija jau eksistē
+                $stmt = $pdo->prepare("SELECT id FROM uzdevumu_kategorijas WHERE nosaukums = ?");
+                $stmt->execute([$nosaukums]);
+                if (!$stmt->fetch()) {
+                    $stmt = $pdo->prepare("INSERT INTO uzdevumu_kategorijas (nosaukums, apraksts) VALUES (?, ?)");
+                    $stmt->execute([$nosaukums, $apraksts]);
+                    $imported_count++;
+                }
+            }
+            
+            fclose($handle);
+            setFlashMessage('success', "Importētas $imported_count kategorijas.");
+            $active_tab = 'kategorijas';
+            
+        } catch (Exception $e) {
+            $errors[] = "Importa kļūda: " . $e->getMessage();
+        }
+    }
+    
+    // Pēc POST darbības, pāradresēt ar GET
+    if (!empty($_POST)) {
+        $redirect_url = "settings.php?tab=" . $active_tab;
+        if (!empty($errors)) {
+            $redirect_url .= "&error=1";
+        }
+        header("Location: $redirect_url");
+        exit();
     }
 }
 
@@ -206,7 +503,7 @@ try {
     // Vietas
     $stmt = $pdo->query("
         SELECT v.*, 
-               (SELECT COUNT(*) FROM iekartas WHERE vietas_id = v.id) as iekartu_skaits,
+               (SELECT COUNT(*) FROM iekartas WHERE vietas_id = v.id AND aktīvs = 1) as iekartu_skaits,
                (SELECT COUNT(*) FROM uzdevumi WHERE vietas_id = v.id) as uzdevumu_skaits,
                (SELECT COUNT(*) FROM problemas WHERE vietas_id = v.id) as problemu_skaits
         FROM vietas v 
@@ -254,16 +551,20 @@ include 'includes/header.php';
 
 <!-- Navigācijas ciļņi -->
 <div class="settings-tabs mb-4">
-    <button class="tab-button active" onclick="showTab('vietas')">Vietas</button>
-    <button class="tab-button" onclick="showTab('iekartas')">Iekārtas</button>
-    <button class="tab-button" onclick="showTab('kategorijas')">Kategorijas</button>
+    <button class="tab-button <?php echo $active_tab === 'vietas' ? 'active' : ''; ?>" onclick="showTab('vietas')">Vietas</button>
+    <button class="tab-button <?php echo $active_tab === 'iekartas' ? 'active' : ''; ?>" onclick="showTab('iekartas')">Iekārtas</button>
+    <button class="tab-button <?php echo $active_tab === 'kategorijas' ? 'active' : ''; ?>" onclick="showTab('kategorijas')">Kategorijas</button>
 </div>
 
 <!-- Vietu pārvaldība -->
-<div id="vietas-tab" class="tab-content active">
+<div id="vietas-tab" class="tab-content <?php echo $active_tab === 'vietas' ? 'active' : ''; ?>">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h3>Vietu pārvaldība</h3>
-        <button onclick="openModal('addVietaModal')" class="btn btn-success">Pievienot vietu</button>
+        <div class="btn-group">
+            <button onclick="openModal('addVietaModal')" class="btn btn-success">Pievienot vietu</button>
+            <button onclick="openModal('importVietasModal')" class="btn btn-info">Importēt CSV</button>
+            <button onclick="bulkDeleteVietas()" class="btn btn-danger">Dzēst izvēlētās</button>
+        </div>
     </div>
     
     <div class="card">
@@ -272,16 +573,30 @@ include 'includes/header.php';
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Nosaukums</th>
-                            <th>Apraksts</th>
-                            <th>Statuss</th>
-                            <th>Statistika</th>
+                            <th><input type="checkbox" id="selectAllVietas" onchange="toggleSelectAll('vietas')"></th>
+                            <th onclick="sortTable('vietas', 'nosaukums')" class="sortable-header">
+                                Nosaukums <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('vietas', 'apraksts')" class="sortable-header">
+                                Apraksts <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('vietas', 'aktīvs')" class="sortable-header">
+                                Statuss <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('vietas', 'iekartu_skaits')" class="sortable-header">
+                                Statistika <span class="sort-icon">↕</span>
+                            </th>
                             <th>Darbības</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($vietas as $vieta): ?>
                             <tr class="<?php echo !$vieta['aktīvs'] ? 'table-muted' : ''; ?>">
+                                <td>
+                                    <?php if ($vieta['iekartu_skaits'] == 0 && $vieta['uzdevumu_skaits'] == 0 && $vieta['problemu_skaits'] == 0): ?>
+                                        <input type="checkbox" class="vieta-checkbox" value="<?php echo $vieta['id']; ?>">
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <strong><?php echo htmlspecialchars($vieta['nosaukums']); ?></strong>
                                 </td>
@@ -319,10 +634,14 @@ include 'includes/header.php';
 </div>
 
 <!-- Iekārtu pārvaldība -->
-<div id="iekartas-tab" class="tab-content">
+<div id="iekartas-tab" class="tab-content <?php echo $active_tab === 'iekartas' ? 'active' : ''; ?>">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h3>Iekārtu pārvaldība</h3>
-        <button onclick="openModal('addIekartaModal')" class="btn btn-success">Pievienot iekārtu</button>
+        <div class="btn-group">
+            <button onclick="openModal('addIekartaModal')" class="btn btn-success">Pievienot iekārtu</button>
+            <button onclick="openModal('importIekartasModal')" class="btn btn-info">Importēt CSV</button>
+            <button onclick="bulkDeleteIekartas()" class="btn btn-danger">Dzēst izvēlētās</button>
+        </div>
     </div>
     
     <div class="card">
@@ -331,17 +650,33 @@ include 'includes/header.php';
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Nosaukums</th>
-                            <th>Vieta</th>
-                            <th>Apraksts</th>
-                            <th>Statuss</th>
-                            <th>Statistika</th>
+                            <th><input type="checkbox" id="selectAllIekartas" onchange="toggleSelectAll('iekartas')"></th>
+                            <th onclick="sortTable('iekartas', 'nosaukums')" class="sortable-header">
+                                Nosaukums <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('iekartas', 'vietas_nosaukums')" class="sortable-header">
+                                Vieta <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('iekartas', 'apraksts')" class="sortable-header">
+                                Apraksts <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('iekartas', 'aktīvs')" class="sortable-header">
+                                Statuss <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('iekartas', 'uzdevumu_skaits')" class="sortable-header">
+                                Statistika <span class="sort-icon">↕</span>
+                            </th>
                             <th>Darbības</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($iekartas as $iekarta): ?>
                             <tr class="<?php echo !$iekarta['aktīvs'] ? 'table-muted' : ''; ?>">
+                                <td>
+                                    <?php if ($iekarta['uzdevumu_skaits'] == 0 && $iekarta['problemu_skaits'] == 0): ?>
+                                        <input type="checkbox" class="iekarta-checkbox" value="<?php echo $iekarta['id']; ?>">
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <strong><?php echo htmlspecialchars($iekarta['nosaukums']); ?></strong>
                                 </td>
@@ -379,10 +714,14 @@ include 'includes/header.php';
 </div>
 
 <!-- Kategoriju pārvaldība -->
-<div id="kategorijas-tab" class="tab-content">
+<div id="kategorijas-tab" class="tab-content <?php echo $active_tab === 'kategorijas' ? 'active' : ''; ?>">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h3>Uzdevumu kategoriju pārvaldība</h3>
-        <button onclick="openModal('addKategorijaModal')" class="btn btn-success">Pievienot kategoriju</button>
+        <div class="btn-group">
+            <button onclick="openModal('addKategorijaModal')" class="btn btn-success">Pievienot kategoriju</button>
+            <button onclick="openModal('importKategorijasModal')" class="btn btn-info">Importēt CSV</button>
+            <button onclick="bulkDeleteKategorijas()" class="btn btn-danger">Dzēst izvēlētās</button>
+        </div>
     </div>
     
     <div class="card">
@@ -391,16 +730,30 @@ include 'includes/header.php';
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Nosaukums</th>
-                            <th>Apraksts</th>
-                            <th>Statuss</th>
-                            <th>Uzdevumu skaits</th>
+                            <th><input type="checkbox" id="selectAllKategorijas" onchange="toggleSelectAll('kategorijas')"></th>
+                            <th onclick="sortTable('kategorijas', 'nosaukums')" class="sortable-header">
+                                Nosaukums <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('kategorijas', 'apraksts')" class="sortable-header">
+                                Apraksts <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('kategorijas', 'aktīvs')" class="sortable-header">
+                                Statuss <span class="sort-icon">↕</span>
+                            </th>
+                            <th onclick="sortTable('kategorijas', 'uzdevumu_skaits')" class="sortable-header">
+                                Uzdevumu skaits <span class="sort-icon">↕</span>
+                            </th>
                             <th>Darbības</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($kategorijas as $kategorija): ?>
                             <tr class="<?php echo !$kategorija['aktīvs'] ? 'table-muted' : ''; ?>">
+                                <td>
+                                    <?php if ($kategorija['uzdevumu_skaits'] == 0): ?>
+                                        <input type="checkbox" class="kategorija-checkbox" value="<?php echo $kategorija['id']; ?>">
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <strong><?php echo htmlspecialchars($kategorija['nosaukums']); ?></strong>
                                 </td>
@@ -431,7 +784,102 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- Modālie logi -->
+<!-- CSV importa modālie logi -->
+
+<!-- Vietu imports -->
+<div id="importVietasModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">Importēt vietas no CSV</h3>
+            <button onclick="closeModal('importVietasModal')" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>CSV fails jāsatur kolonnas: <code>nosaukums,apraksts</code></p>
+            <p>Piemērs:</p>
+            <pre>nosaukums,apraksts
+Biroja ēka,"Galvenā biroja ēka"
+Noliktava,"Preču noliktava"</pre>
+            
+            <form id="importVietasForm" method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="import_vietas">
+                <input type="hidden" name="active_tab" value="vietas">
+                
+                <div class="form-group">
+                    <label for="vietas_csv_file" class="form-label">CSV fails</label>
+                    <input type="file" id="vietas_csv_file" name="csv_file" class="form-control" accept=".csv,.txt" required>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeModal('importVietasModal')" class="btn btn-secondary">Atcelt</button>
+            <button onclick="document.getElementById('importVietasForm').submit()" class="btn btn-primary">Importēt</button>
+        </div>
+    </div>
+</div>
+
+<!-- Iekārtu imports -->
+<div id="importIekartasModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">Importēt iekārtas no CSV</h3>
+            <button onclick="closeModal('importIekartasModal')" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>CSV fails jāsatur kolonnas: <code>nosaukums,apraksts,vieta</code></p>
+            <p>Piemērs:</p>
+            <pre>nosaukums,apraksts,vieta
+Printeri,"Biroja printeri","Biroja ēka"
+Serveri,"Datu serveri","Noliktava"</pre>
+            
+            <form id="importIekartasForm" method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="import_iekartas">
+                <input type="hidden" name="active_tab" value="iekartas">
+                
+                <div class="form-group">
+                    <label for="iekartas_csv_file" class="form-label">CSV fails</label>
+                    <input type="file" id="iekartas_csv_file" name="csv_file" class="form-control" accept=".csv,.txt" required>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeModal('importIekartasModal')" class="btn btn-secondary">Atceli</button>
+            <button onclick="document.getElementById('importIekartasForm').submit()" class="btn btn-primary">Importēt</button>
+        </div>
+    </div>
+</div>
+
+<!-- Kategoriju imports -->
+<div id="importKategorijasModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title">Importēt kategorijas no CSV</h3>
+            <button onclick="closeModal('importKategorijasModal')" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>CSV fails jāsatur kolonnas: <code>nosaukums,apraksts</code></p>
+            <p>Piemērs:</p>
+            <pre>nosaukums,apraksts
+Apkope,"Regulārā apkope"
+Remonts,"Ārkārtas remonts"</pre>
+            
+            <form id="importKategorijasForm" method="POST" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="import_kategorijas">
+                <input type="hidden" name="active_tab" value="kategorijas">
+                
+                <div class="form-group">
+                    <label for="kategorijas_csv_file" class="form-label">CSV fails</label>
+                    <input type="file" id="kategorijas_csv_file" name="csv_file" class="form-control" accept=".csv,.txt" required>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeModal('importKategorijasModal')" class="btn btn-secondary">Atcelt</button>
+            <button onclick="document.getElementById('importKategorijasForm').submit()" class="btn btn-primary">Importēt</button>
+        </div>
+    </div>
+</div>
+
+<!-- Esošie modālie logi (pievienošana un rediģēšana) -->
 
 <!-- Vietas pievienošanas modāls -->
 <div id="addVietaModal" class="modal">
@@ -443,6 +891,7 @@ include 'includes/header.php';
         <div class="modal-body">
             <form id="addVietaForm" method="POST">
                 <input type="hidden" name="action" value="add_vieta">
+                <input type="hidden" name="active_tab" value="vietas">
                 
                 <div class="form-group">
                     <label for="vieta_nosaukums" class="form-label">Nosaukums *</label>
@@ -473,6 +922,7 @@ include 'includes/header.php';
             <form id="editVietaForm" method="POST">
                 <input type="hidden" name="action" value="edit_vieta">
                 <input type="hidden" name="vieta_id" id="edit_vieta_id">
+                <input type="hidden" name="active_tab" value="vietas">
                 
                 <div class="form-group">
                     <label for="edit_vieta_nosaukums" class="form-label">Nosaukums *</label>
@@ -508,6 +958,7 @@ include 'includes/header.php';
         <div class="modal-body">
             <form id="addIekartaForm" method="POST">
                 <input type="hidden" name="action" value="add_iekarta">
+                <input type="hidden" name="active_tab" value="iekartas">
                 
                 <div class="form-group">
                     <label for="iekarta_nosaukums" class="form-label">Nosaukums *</label>
@@ -517,7 +968,7 @@ include 'includes/header.php';
                 <div class="form-group">
                     <label for="iekarta_vietas_id" class="form-label">Vieta</label>
                     <select id="iekarta_vietas_id" name="vietas_id" class="form-control">
-                        <option value="">Izvēlieties vietu</option>
+                        <option value="">Nav norādīta</option>
                         <?php foreach ($aktivas_vietas as $vieta): ?>
                             <option value="<?php echo $vieta['id']; ?>"><?php echo htmlspecialchars($vieta['nosaukums']); ?></option>
                         <?php endforeach; ?>
@@ -548,6 +999,7 @@ include 'includes/header.php';
             <form id="editIekartaForm" method="POST">
                 <input type="hidden" name="action" value="edit_iekarta">
                 <input type="hidden" name="iekarta_id" id="edit_iekarta_id">
+                <input type="hidden" name="active_tab" value="iekartas">
                 
                 <div class="form-group">
                     <label for="edit_iekarta_nosaukums" class="form-label">Nosaukums *</label>
@@ -557,7 +1009,7 @@ include 'includes/header.php';
                 <div class="form-group">
                     <label for="edit_iekarta_vietas_id" class="form-label">Vieta</label>
                     <select id="edit_iekarta_vietas_id" name="vietas_id" class="form-control">
-                        <option value="">Izvēlieties vietu</option>
+                        <option value="">Nav norādīta</option>
                         <?php foreach ($aktivas_vietas as $vieta): ?>
                             <option value="<?php echo $vieta['id']; ?>"><?php echo htmlspecialchars($vieta['nosaukums']); ?></option>
                         <?php endforeach; ?>
@@ -593,6 +1045,7 @@ include 'includes/header.php';
         <div class="modal-body">
             <form id="addKategorijaForm" method="POST">
                 <input type="hidden" name="action" value="add_kategorija">
+                <input type="hidden" name="active_tab" value="kategorijas">
                 
                 <div class="form-group">
                     <label for="kategorija_nosaukums" class="form-label">Nosaukums *</label>
@@ -623,6 +1076,7 @@ include 'includes/header.php';
             <form id="editKategorijaForm" method="POST">
                 <input type="hidden" name="action" value="edit_kategorija">
                 <input type="hidden" name="kategorija_id" id="edit_kategorija_id">
+                <input type="hidden" name="active_tab" value="kategorijas">
                 
                 <div class="form-group">
                     <label for="edit_kategorija_nosaukums" class="form-label">Nosaukums *</label>
@@ -649,11 +1103,80 @@ include 'includes/header.php';
 </div>
 
 <script>
-// Inicializācija kad lapa ielādējusies
-document.addEventListener('DOMContentLoaded', function() {
-    // Pirmais tab pēc noklusējuma
-    showTab('vietas');
-});
+// Globālie kārtošanas mainīgie
+let currentSortField = {};
+let currentSortDirection = {};
+
+// Tabelu kārtošanas funkcija
+function sortTable(tableType, field) {
+    const table = document.querySelector(`#${tableType}-tab table tbody`);
+    const rows = Array.from(table.querySelectorAll('tr'));
+    
+    // Noteikt kārtošanas virzienu
+    if (currentSortField[tableType] === field) {
+        currentSortDirection[tableType] = currentSortDirection[tableType] === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentSortDirection[tableType] = 'asc';
+    }
+    currentSortField[tableType] = field;
+    
+    // Atjaunot vizuālās ikoniņas
+    document.querySelectorAll(`#${tableType}-tab .sort-icon`).forEach(icon => {
+        icon.textContent = '↕';
+    });
+    
+    const activeHeader = document.querySelector(`#${tableType}-tab th[onclick="sortTable('${tableType}', '${field}')"] .sort-icon`);
+    if (activeHeader) {
+        activeHeader.textContent = currentSortDirection[tableType] === 'asc' ? '↑' : '↓';
+    }
+    
+    // Kārtot rindas
+    rows.sort((a, b) => {
+        let aVal, bVal;
+        
+        // Iegūt vērtības atkarībā no lauka
+        switch (field) {
+            case 'nosaukums':
+                aVal = a.cells[1].textContent.trim();
+                bVal = b.cells[1].textContent.trim();
+                break;
+            case 'apraksts':
+                aVal = a.cells[2].textContent.trim();
+                bVal = b.cells[2].textContent.trim();
+                break;
+            case 'aktīvs':
+                aVal = a.cells[3].textContent.trim();
+                bVal = b.cells[3].textContent.trim();
+                break;
+            case 'vietas_nosaukums':
+                aVal = a.cells[2].textContent.trim();
+                bVal = b.cells[2].textContent.trim();
+                break;
+            case 'iekartu_skaits':
+            case 'uzdevumu_skaits':
+                // Iegūt skaitļus no statistikas
+                const aStats = a.cells[4].textContent;
+                const bStats = b.cells[4].textContent;
+                aVal = parseInt(aStats.match(/\d+/)?.[0] || '0');
+                bVal = parseInt(bStats.match(/\d+/)?.[0] || '0');
+                break;
+            default:
+                aVal = a.cells[1].textContent.trim();
+                bVal = b.cells[1].textContent.trim();
+        }
+        
+        // Salīdzināšana
+        if (typeof aVal === 'number' && typeof bVal === 'number') {
+            return currentSortDirection[tableType] === 'asc' ? aVal - bVal : bVal - aVal;
+        } else {
+            const comparison = aVal.localeCompare(bVal, 'lv', { sensitivity: 'base' });
+            return currentSortDirection[tableType] === 'asc' ? comparison : -comparison;
+        }
+    });
+    
+    // Atjaunot tabulu
+    rows.forEach(row => table.appendChild(row));
+}
 
 // Ciļņu pārslēgšana
 function showTab(tabName) {
@@ -672,6 +1195,136 @@ function showTab(tabName) {
     
     // Pievienot aktīvo klasi pogai
     event.target.classList.add('active');
+    
+    // Atjaunot URL
+    const url = new URL(window.location);
+    url.searchParams.set('tab', tabName);
+    window.history.pushState({}, '', url);
+}
+
+// Masveida izvēle
+function toggleSelectAll(type) {
+    const checkboxes = document.querySelectorAll('.' + type.slice(0, -1) + '-checkbox');
+    const selectAll = document.getElementById('selectAll' + type.charAt(0).toUpperCase() + type.slice(1));
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = selectAll.checked;
+    });
+}
+
+// Masveida dzēšana
+function bulkDeleteVietas() {
+    const selected = Array.from(document.querySelectorAll('.vieta-checkbox:checked')).map(cb => cb.value);
+    
+    if (selected.length === 0) {
+        alert('Lūdzu, izvēlieties vismaz vienu vietu.');
+        return;
+    }
+    
+    if (confirm(`Vai tiešām vēlaties dzēst ${selected.length} izvēlētās vietas?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.style.display = 'none';
+        
+        const actionInput = document.createElement('input');
+        actionInput.type = 'hidden';
+        actionInput.name = 'action';
+        actionInput.value = 'bulk_delete_vietas';
+        form.appendChild(actionInput);
+        
+        const tabInput = document.createElement('input');
+        tabInput.type = 'hidden';
+        tabInput.name = 'active_tab';
+        tabInput.value = 'vietas';
+        form.appendChild(tabInput);
+        
+        selected.forEach(id => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'selected_vietas[]';
+            input.value = id;
+            form.appendChild(input);
+        });
+        
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function bulkDeleteIekartas() {
+    const selected = Array.from(document.querySelectorAll('.iekarta-checkbox:checked')).map(cb => cb.value);
+    
+    if (selected.length === 0) {
+        alert('Lūdzu, izvēlieties vismaz vienu iekārtu.');
+        return;
+    }
+    
+    if (confirm(`Vai tiešām vēlaties dzēst ${selected.length} izvēlētās iekārtas?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.style.display = 'none';
+        
+        const actionInput = document.createElement('input');
+        actionInput.type = 'hidden';
+        actionInput.name = 'action';
+        actionInput.value = 'bulk_delete_iekartas';
+        form.appendChild(actionInput);
+        
+        const tabInput = document.createElement('input');
+        tabInput.type = 'hidden';
+        tabInput.name = 'active_tab';
+        tabInput.value = 'iekartas';
+        form.appendChild(tabInput);
+        
+        selected.forEach(id => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'selected_iekartas[]';
+            input.value = id;
+            form.appendChild(input);
+        });
+        
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+function bulkDeleteKategorijas() {
+    const selected = Array.from(document.querySelectorAll('.kategorija-checkbox:checked')).map(cb => cb.value);
+    
+    if (selected.length === 0) {
+        alert('Lūdzu, izvēlieties vismaz vienu kategoriju.');
+        return;
+    }
+    
+    if (confirm(`Vai tiešām vēlaties dzēst ${selected.length} izvēlētās kategorijas?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.style.display = 'none';
+        
+        const actionInput = document.createElement('input');
+        actionInput.type = 'hidden';
+        actionInput.name = 'action';
+        actionInput.value = 'bulk_delete_kategorijas';
+        form.appendChild(actionInput);
+        
+        const tabInput = document.createElement('input');
+        tabInput.type = 'hidden';
+        tabInput.name = 'active_tab';
+        tabInput.value = 'kategorijas';
+        form.appendChild(tabInput);
+        
+        selected.forEach(id => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'selected_kategorijas[]';
+            input.value = id;
+            form.appendChild(input);
+        });
+        
+        document.body.appendChild(form);
+        form.submit();
+    }
 }
 
 // Vietu funkcijas
@@ -698,8 +1351,14 @@ function deleteVieta(vietaId) {
     vietaInput.name = 'vieta_id';
     vietaInput.value = vietaId;
     
+    const tabInput = document.createElement('input');
+    tabInput.type = 'hidden';
+    tabInput.name = 'active_tab';
+    tabInput.value = 'vietas';
+    
     form.appendChild(actionInput);
     form.appendChild(vietaInput);
+    form.appendChild(tabInput);
     
     document.body.appendChild(form);
     form.submit();
@@ -709,7 +1368,11 @@ function deleteVieta(vietaId) {
 function editIekarta(iekarta) {
     document.getElementById('edit_iekarta_id').value = iekarta.id;
     document.getElementById('edit_iekarta_nosaukums').value = iekarta.nosaukums;
-    document.getElementById('edit_iekarta_vietas_id').value = iekarta.vietas_id || '';
+    
+    // Iestatīt izvēlēto vietu
+    const select = document.getElementById('edit_iekarta_vietas_id');
+    select.value = iekarta.vietas_id || '';
+    
     document.getElementById('edit_iekarta_apraksts').value = iekarta.apraksts || '';
     document.getElementById('edit_iekarta_aktīvs').checked = iekarta.aktīvs == 1;
     openModal('editIekartaModal');
@@ -730,8 +1393,14 @@ function deleteIekarta(iekartaId) {
     iekartaInput.name = 'iekarta_id';
     iekartaInput.value = iekartaId;
     
+    const tabInput = document.createElement('input');
+    tabInput.type = 'hidden';
+    tabInput.name = 'active_tab';
+    tabInput.value = 'iekartas';
+    
     form.appendChild(actionInput);
     form.appendChild(iekartaInput);
+    form.appendChild(tabInput);
     
     document.body.appendChild(form);
     form.submit();
@@ -761,8 +1430,14 @@ function deleteKategorija(kategorijaId) {
     kategorijaInput.name = 'kategorija_id';
     kategorijaInput.value = kategorijaId;
     
+    const tabInput = document.createElement('input');
+    tabInput.type = 'hidden';
+    tabInput.name = 'active_tab';
+    tabInput.value = 'kategorijas';
+    
     form.appendChild(actionInput);
     form.appendChild(kategorijaInput);
+    form.appendChild(tabInput);
     
     document.body.appendChild(form);
     form.submit();
@@ -824,7 +1499,7 @@ function deleteKategorija(kategorijaId) {
 
 .btn-group {
     display: flex;
-    gap: 2px;
+    gap: 4px;
 }
 
 .btn-group .btn {
@@ -850,6 +1525,10 @@ function deleteKategorija(kategorijaId) {
         flex-direction: column;
         gap: var(--spacing-sm);
     }
+    
+    .btn-group {
+        flex-wrap: wrap;
+    }
 }
 
 @media (max-width: 480px) {
@@ -865,6 +1544,50 @@ function deleteKategorija(kategorijaId) {
     .btn-group .btn {
         width: 100%;
     }
+}
+
+/* Kārtojamās galvenes */
+.sortable-header {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: background-color 0.2s ease;
+}
+
+.sortable-header:hover {
+    background-color: var(--gray-100);
+}
+
+.sort-icon {
+    font-size: 12px;
+    color: var(--gray-500);
+    margin-left: 5px;
+}
+
+.sortable-header:hover .sort-icon {
+    color: var(--primary-color);
+}
+
+/* Select styling */
+select {
+    min-height: 38px;
+    padding: var(--spacing-xs);
+}
+
+/* CSV importa stili */
+pre {
+    background: var(--gray-100);
+    padding: var(--spacing-sm);
+    border-radius: 4px;
+    font-size: var(--font-size-sm);
+    overflow-x: auto;
+}
+
+code {
+    background: var(--gray-100);
+    padding: 2px 4px;
+    border-radius: 2px;
+    font-size: var(--font-size-sm);
 }
 </style>
 
