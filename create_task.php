@@ -16,19 +16,19 @@ try {
     // Vietas
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
-    
+
     // Iekārtas
     $stmt = $pdo->query("SELECT id, nosaukums, vietas_id FROM iekartas WHERE aktīvs = 1 ORDER BY nosaukums");
     $iekartas = $stmt->fetchAll();
-    
+
     // Mehāniķi
     $stmt = $pdo->query("SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE loma = 'Mehāniķis' AND statuss = 'Aktīvs' ORDER BY vards, uzvards");
     $mehaniki = $stmt->fetchAll();
-    
+
     // Uzdevumu kategorijas
     $stmt = $pdo->query("SELECT id, nosaukums FROM uzdevumu_kategorijas WHERE aktīvs = 1 ORDER BY nosaukums");
     $kategorijas = $stmt->fetchAll();
-    
+
     // Regulāro uzdevumu šabloni
     $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
     $regularie_sabloni = $stmt->fetchAll();
@@ -36,7 +36,7 @@ try {
 	// Regulāro uzdevumu šabloni
     $stmt = $pdo->query("SELECT id, nosaukums FROM regularo_uzdevumu_sabloni WHERE aktīvs = 1 ORDER BY nosaukums");
     $regularie_sabloni = $stmt->fetchAll();
-    
+
     // Brīvāko mehāniķu saraksts
     $stmt = $pdo->query("
         SELECT l.id, 
@@ -49,13 +49,17 @@ try {
         ORDER BY aktīvo_uzdevumu_skaits ASC, l.vards, l.uzvards
     ");
     $mehaniki_ar_statistiku = $stmt->fetchAll();
-    
+
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot datus: " . $e->getMessage();
 }
 
 // Apstrādāt formas iesniegšanu
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Pārbaudīt CSRF token
+    if (!isset($_POST['csrf_token']) || !hash_equals(generateCSRFToken(), $_POST['csrf_token'])) {
+        $errors[] = "Nederīgs drošības token. Lūdzu, mēģiniet vēlreiz.";
+    }
     $nosaukums = sanitizeInput($_POST['nosaukums'] ?? '');
     $apraksts = sanitizeInput($_POST['apraksts'] ?? '');
     $veids = 'Ikdienas'; // Visi uzdevumi ir ikdienas, problēmu risināšana
@@ -67,44 +71,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $jabeidz_lidz = $_POST['jabeidz_lidz'] ?? '';
     $paredzamais_ilgums = floatval($_POST['paredzamais_ilgums'] ?? 0);
     $problemas_id = intval($_POST['problemas_id'] ?? 0);
-    
+
     // Validācija
     if (empty($nosaukums)) {
         $errors[] = "Uzdevuma nosaukums ir obligāts.";
     }
-    
+
     if (empty($apraksts)) {
         $errors[] = "Uzdevuma apraksts ir obligāts.";
     }
-    
-    if ($piešķirts_id == 0) {
-        $errors[] = "Jāizvēlas mehāniķis, kuram piešķirt uzdevumu.";
+
+    $assignment_type = sanitizeInput($_POST['assignment_type'] ?? 'single');
+    $piešķirts_ids = $_POST['piešķirts_ids'] ?? [];
+
+    if ($assignment_type === 'single') {
+        if ($piešķirts_id == 0) {
+            $errors[] = "Jāizvēlas mehāniķis, kuram piešķirt uzdevumu.";
+        }
+    } else {
+        if (empty($piešķirts_ids) || !is_array($piešķirts_ids)) {
+            $errors[] = "Jāizvēlas vismaz viens mehāniķis, kam piešķirt uzdevumu.";
+        } else {
+            $piešķirts_ids = array_map('intval', array_filter($piešķirts_ids));
+            if (empty($piešķirts_ids)) {
+                $errors[] = "Jāizvēlas vismaz viens mehāniķis, kam piešķirt uzdevumu.";
+            }
+        }
     }
-    
+
     if (!in_array($prioritate, ['Zema', 'Vidēja', 'Augsta', 'Kritiska'])) {
         $errors[] = "Nederīga prioritāte.";
     }
-    
+
     if (!empty($jabeidz_lidz)) {
         $jabeidz_lidz_timestamp = strtotime($jabeidz_lidz);
         if ($jabeidz_lidz_timestamp === false || $jabeidz_lidz_timestamp <= time()) {
             $errors[] = "Termiņa datums jābūt nākotnē.";
         }
     }
-    
+
     // Ja nav kļūdu, izveidot uzdevumu
     if (empty($errors)) {
         try {
             $pdo->beginTransaction();
-            
+
             // Izveidot uzdevumu
+            $is_multi_assignment = ($assignment_type === 'multiple');
+            $primary_mechanic_id = $is_multi_assignment ? $piešķirts_ids[0] : $piešķirts_id;
+
             $stmt = $pdo->prepare("
                 INSERT INTO uzdevumi 
                 (nosaukums, apraksts, veids, vietas_id, iekartas_id, kategorijas_id, prioritate, 
-                 piešķirts_id, izveidoja_id, jabeidz_lidz, paredzamais_ilgums, problemas_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 piešķirts_id, izveidoja_id, jabeidz_lidz, paredzamais_ilgums, problemas_id, daudziem_mehāniķiem)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
-            
+
             $stmt->execute([
                 $nosaukums,
                 $apraksts,
@@ -113,22 +134,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $iekartas_id ?: null,
                 $kategorijas_id ?: null,
                 $prioritate,
-                $piešķirts_id,
+                $primary_mechanic_id,
                 $currentUser['id'],
                 $jabeidz_lidz ?: null,
                 $paredzamais_ilgums ?: null,
-                $problemas_id ?: null
+                $problemas_id ?: null,
+                $is_multi_assignment ? 1 : 0
             ]);
-            
+
             $uzdevuma_id = $pdo->lastInsertId();
-            
+
+            // Ja ir vairāku mehāniķu piešķīrums, izveidot piešķīrumus
+            if ($is_multi_assignment) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO uzdevumu_piešķīrumi (uzdevuma_id, mehāniķa_id, statuss) 
+                    VALUES (?, ?, 'Piešķirts')
+                ");
+
+                $successful_assignments = [];
+                foreach ($piešķirts_ids as $mechanic_id) {
+                    if ($stmt->execute([$uzdevuma_id, $mechanic_id])) {
+                        $successful_assignments[] = $mechanic_id;
+                    }
+                }
+
+                // Paziņot visiem veiksmīgi piešķirtajiem mehāniķiem
+                foreach ($successful_assignments as $mechanic_id) {
+                    try {
+                        // Iegūt mehāniķa vārdu paziņojumam
+                        $mechanicStmt = $pdo->prepare("SELECT CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE id = ?");
+                        $mechanicStmt->execute([$mechanic_id]);
+                        $mechanicName = $mechanicStmt->fetchColumn();
+
+                        $notification_result = createNotification(
+                        $mechanic_id,
+                            'Jauns uzdevums piešķirts (grupas darbs)',
+                            "Jums ir piešķirts jauns uzdevums kopā ar citiem mehāniķiem: $nosaukums",
+                            'Jauns uzdevums',
+                            'Uzdevums',
+                            $uzdevuma_id
+                        );
+
+                        error_log("Paziņojums mehāniķim $mechanicName ($mechanic_id) izveidots: " . ($notification_result ? 'jā' : 'nē'));
+
+                        // Telegram paziņojums
+                        sendTaskTelegramNotification($mechanic_id, $nosaukums, $uzdevuma_id, 'new_task');
+                    } catch (Exception $e) {
+                        error_log("Kļūda izveidojot paziņojumu mehāniķim $mechanic_id: " . $e->getMessage());
+                    }
+                }
+
+                error_log("Vairāku mehāniķu uzdevums izveidots. Kopā mehāniķu: " . count($successful_assignments) . ". IDs: " . implode(', ', $successful_assignments));
+            } else {
+                // Izveidot paziņojumu vienam mehāniķim
+                createNotification(
+                    $piešķirts_id,
+                    'Jauns uzdevums piešķirts',
+                    "Jums ir piešķirts jauns uzdevums: $nosaukums",
+                    'Jauns uzdevums',
+                    'Uzdevums',
+                    $uzdevuma_id
+                );
+
+                // Telegram paziņojums mehāniķim
+                sendTaskTelegramNotification($piešķirts_id, $nosaukums, $uzdevuma_id, 'new_task');
+            }
+
             // Apstrādāt failu augšupielādi
             if (!empty($_FILES['faili']['name'][0])) {
                 if (!is_dir(UPLOAD_DIR)) {
                     mkdir(UPLOAD_DIR, 0755, true);
                 }
-                
-                for ($i = 0; i < count($_FILES['faili']['name']); $i++) {
+
+                for ($i = 0; $i < count($_FILES['faili']['name']); $i++) {
                     if ($_FILES['faili']['error'][$i] === UPLOAD_ERR_OK) {
                         $file = [
                             'name' => $_FILES['faili']['name'][$i],
@@ -137,16 +215,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'error' => $_FILES['faili']['error'][$i],
                             'size' => $_FILES['faili']['size'][$i]
                         ];
-                        
+
                         try {
                             $fileInfo = uploadFile($file);
-                            
+
                             $stmt = $pdo->prepare("
                                 INSERT INTO faili 
                                 (originalais_nosaukums, saglabatais_nosaukums, faila_cels, faila_tips, faila_izmers, tips, saistitas_id, augšupielādēja_id)
                                 VALUES (?, ?, ?, ?, ?, 'Uzdevums', ?, ?)
                             ");
-                            
+
                             $stmt->execute([
                                 $fileInfo['originalais_nosaukums'],
                                 $fileInfo['saglabatais_nosaukums'],
@@ -162,42 +240,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            
-            // Izveidot paziņojumu mehāniķim
-            $stmt = $pdo->prepare("SELECT CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE id = ?");
-            $stmt->execute([$piešķirts_id]);
-            $mehaniķis = $stmt->fetch();
-            
-            createNotification(
-                $piešķirts_id,
-                'Jauns uzdevums piešķirts',
-                "Jums ir piešķirts jauns uzdevums: $nosaukums",
-                'Jauns uzdevums',
-                'Uzdevums',
-                $uzdevuma_id
-            );
-            
-            // Telegram paziņojums mehāniķim
-            sendTaskTelegramNotification($piešķirts_id, $nosaukums, $uzdevuma_id, 'new_task');
-            
+
+
+
             // Ja uzdevums izveidots no problēmas, atjaunot problēmas statusu
             if ($problemas_id > 0) {
                 $stmt = $pdo->prepare("UPDATE problemas SET statuss = 'Pārvērsta uzdevumā', apstradasija_id = ? WHERE id = ?");
                 $stmt->execute([$currentUser['id'], $problemas_id]);
             }
-            
+
             // Pievienot uzdevumu vēsturi
             $stmt = $pdo->prepare("
                 INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
                 VALUES (?, NULL, 'Jauns', 'Uzdevums izveidots', ?)
             ");
             $stmt->execute([$uzdevuma_id, $currentUser['id']]);
-            
+
             $pdo->commit();
-            
+
             setFlashMessage('success', 'Uzdevums veiksmīgi izveidots!');
             redirect('tasks.php');
-            
+
         } catch (PDOException $e) {
             $pdo->rollBack();
             $errors[] = "Kļūda izveidojot uzdevumu: " . $e->getMessage();
@@ -257,7 +320,7 @@ include 'includes/header.php';
             <?php if ($problem_data): ?>
                 <input type="hidden" name="problemas_id" value="<?php echo $problem_data['id']; ?>">
             <?php endif; ?>
-            
+
             <!-- Uzdevuma nosaukums - pilns platums -->
             <div class="form-group">
                 <label for="nosaukums" class="form-label">Uzdevuma nosaukums *</label>
@@ -272,7 +335,7 @@ include 'includes/header.php';
                     placeholder="Ievadiet uzdevuma nosaukumu..."
                 >
             </div>
-            
+
             <!-- Uzdevuma apraksts -->
             <div class="form-group">
                 <label for="apraksts" class="form-label">Uzdevuma apraksts *</label>
@@ -285,7 +348,7 @@ include 'includes/header.php';
                     placeholder="Detalizēti aprakstiet uzdevumu..."
                 ><?php echo htmlspecialchars($problem_data['apraksts'] ?? $_POST['apraksts'] ?? ''); ?></textarea>
             </div>
-            
+
             <!-- Vieta un iekārta -->
             <div class="row">
                 <div class="col-md-6">
@@ -302,7 +365,7 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-6">
                     <div class="form-group">
                         <label for="iekartas_id" class="form-label">Iekārta</label>
@@ -329,7 +392,7 @@ include 'includes/header.php';
                     </div>
                 </div>
             </div>
-            
+
             <!-- Kategorija un mehāniķis -->
             <div class="row">
                 <div class="col-md-6">
@@ -346,23 +409,52 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-6">
                     <div class="form-group">
-                        <label for="piešķirts_id" class="form-label">Piešķirt mehāniķim *</label>
-                        <select id="piešķirts_id" name="piešķirts_id" class="form-control" required>
-                            <option value="">Izvēlieties mehāniķi</option>
-                            <?php foreach ($mehaniki as $mehaniķis): ?>
-                                <option value="<?php echo $mehaniķis['id']; ?>" 
-                                    <?php echo ($_POST['piešķirts_id'] ?? '') == $mehaniķis['id'] ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($mehaniķis['pilns_vards']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
+                        <label class="form-label">Piešķirt mehāniķim/mehāniķiem *</label>
+
+                        <!-- Izvēle starp vienu vai vairākiem mehāniķiem -->
+                        <div class="assignment-type-selector mb-2">
+                            <label class="radio-label">
+                                <input type="radio" name="assignment_type" value="single" checked onchange="toggleAssignmentType()">
+                                Piešķirt vienam mehāniķim
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="assignment_type" value="multiple" onchange="toggleAssignmentType()">
+                                Piešķirt vairākiem mehāniķiem
+                            </label>
+                        </div>
+
+                        <!-- Viena mehāniķa izvēle -->
+                        <div id="single-assignment">
+                            <select id="piešķirts_id" name="piešķirts_id" class="form-control">
+                                <option value="">Izvēlieties mehāniķi</option>
+                                <?php foreach ($mehaniki as $mehaniķis): ?>
+                                    <option value="<?php echo $mehaniķis['id']; ?>" 
+                                        <?php echo ($_POST['piešķirts_id'] ?? '') == $mehaniķis['id'] ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($mehaniķis['pilns_vards']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <!-- Vairāku mehāniķu izvēle -->
+                        <div id="multiple-assignment" style="display: none;">
+                            <div class="mechanic-checkboxes">
+                                <?php foreach ($mehaniki as $mehaniķis): ?>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" name="piešķirts_ids[]" value="<?php echo $mehaniķis['id']; ?>"
+                                            <?php echo (isset($_POST['piešķirts_ids']) && in_array($mehaniķis['id'], $_POST['piešķirts_ids'])) ? 'checked' : ''; ?>>
+                                        <?php echo htmlspecialchars($mehaniķis['pilns_vards']); ?>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Prioritāte, termiņš un ilgums -->
             <div class="row">
                 <div class="col-md-4">
@@ -376,7 +468,7 @@ include 'includes/header.php';
                         </select>
                     </div>
                 </div>
-                
+
                 <div class="col-md-4">
                     <div class="form-group">
                         <label for="jabeidz_lidz" class="form-label">Jābeidz līdz</label>
@@ -390,7 +482,7 @@ include 'includes/header.php';
                         >
                     </div>
                 </div>
-                
+
                 <div class="col-md-4">
                     <div class="form-group">
                         <label for="paredzamais_ilgums" class="form-label">Paredzamā izpilde (stundas)</label>
@@ -408,7 +500,7 @@ include 'includes/header.php';
                     </div>
                 </div>
             </div>
-            
+
             <!-- Failu augšupielāde -->
             <div class="form-group">
                 <label for="faili" class="form-label">Pievienot failus (attēli, PDF)</label>
@@ -424,7 +516,7 @@ include 'includes/header.php';
                     Atļautie failu tipi: JPG, PNG, GIF, PDF, DOC, DOCX. Maksimālais izmērs: <?php echo round(MAX_FILE_SIZE / 1024 / 1024); ?>MB
                 </small>
             </div>
-            
+
             <!-- Darbības pogas -->
             <div class="form-group">
                 <div class="d-flex justify-content-between">
@@ -452,7 +544,8 @@ include 'includes/header.php';
 document.addEventListener('DOMContentLoaded', function() {
     updateIekartas();
     initSearchableSelect();
-    
+    toggleAssignmentType();
+
     // Uzstādīt noklusēto iekārtas nosaukumu meklēšanas laukā
     const iekartasSelect = document.getElementById('iekartas_id');
     const searchInput = document.getElementById('iekartas_search');
@@ -462,32 +555,59 @@ document.addEventListener('DOMContentLoaded', function() {
             searchInput.value = selectedOption.textContent.trim();
         }
     }
-    
+
     // Form validation
     const taskForm = document.getElementById('taskForm');
     if (taskForm) {
         taskForm.addEventListener('submit', function(e) {
             const nosaukums = document.getElementById('nosaukums').value.trim();
             const apraksts = document.getElementById('apraksts').value.trim();
-            const piešķirts = document.getElementById('piešķirts_id').value;
-            
-            if (!nosaukums || !apraksts || !piešķirts) {
+            const assignmentTypeElement = document.querySelector('input[name="assignment_type"]:checked');
+
+            if (!assignmentTypeElement) {
                 e.preventDefault();
-                alert('Lūdzu aizpildiet visus obligātos laukus.');
+                alert('Izvēlieties piešķīruma veidu.');
                 return;
             }
-            
+
+            const assignmentType = assignmentTypeElement.value;
+            let assignmentValid = false;
+
+            if (assignmentType === 'single') {
+                const piešķirts = document.getElementById('piešķirts_id').value;
+                assignmentValid = piešķirts !== '';
+            } else {
+                const selectedMechanics = document.querySelectorAll('input[name="piešķirts_ids[]"]:checked');
+                assignmentValid = selectedMechanics.length > 0;
+            }
+
+            if (!nosaukums || !apraksts || !assignmentValid) {
+                e.preventDefault();
+                let message = 'Lūdzu aizpildiet visus obligātos laukus.';
+                if (!assignmentValid) {
+                    if (assignmentType === 'single') {
+                        message = 'Lūdzu izvēlieties mehāniķi, kuram piešķirt uzdevumu.';
+                    } else {
+                        message = 'Lūdzu izvēlieties vismaz vienu mehāniķi, kam piešķirt uzdevumu.';
+                    }
+                }
+                alert(message);
+                return false;
+            }
+
             // Pārbaudīt failu izmēru
             const fileInput = document.getElementById('faili');
-            if (fileInput.files.length > 0) {
+            if (fileInput && fileInput.files.length > 0) {
                 for (let i = 0; i < fileInput.files.length; i++) {
                     if (fileInput.files[i].size > <?php echo MAX_FILE_SIZE; ?>) {
                         e.preventDefault();
                         alert('Fails "' + fileInput.files[i].name + '" ir pārāk liels. Maksimālais izmērs: <?php echo round(MAX_FILE_SIZE / 1024 / 1024); ?>MB');
-                        return;
+                        return false;
                     }
                 }
             }
+
+            return true;
         });
     }
 });
@@ -498,14 +618,14 @@ function updateIekartas() {
     const iekartasSelect = document.getElementById('iekartas_id');
     const iekartasSearch = document.getElementById('iekartas_search');
     const selectedVieta = vietasSelect.value;
-    
+
     // Rādīt visas opcijas
     Array.from(iekartasSelect.options).forEach(option => {
         if (option.value === '') {
             option.style.display = 'block';
             return;
         }
-        
+
         const iekartaVieta = option.getAttribute('data-vieta');
         if (!selectedVieta || iekartaVieta === selectedVieta) {
             option.style.display = 'block';
@@ -513,7 +633,7 @@ function updateIekartas() {
             option.style.display = 'none';
         }
     });
-    
+
     // Atiestatīt izvēli, ja pašreizējā iekārta nepieder izvēlētajai vietai
     if (selectedVieta && iekartasSelect.value) {
         const selectedOption = iekartasSelect.options[iekartasSelect.selectedIndex];
@@ -523,7 +643,7 @@ function updateIekartas() {
             iekartasSearch.value = '';
         }
     }
-    
+
     // Atjaunot meklēšanas filtrāciju
     filterIekartas();
 }
@@ -535,24 +655,24 @@ function filterIekartas() {
     const vietasSelect = document.getElementById('vietas_id');
     const searchText = searchInput.value.toLowerCase();
     const selectedVieta = vietasSelect.value;
-    
+
     let hasVisibleOptions = false;
-    
+
     Array.from(iekartasSelect.options).forEach(option => {
         if (option.value === '') {
             option.style.display = 'block';
             return;
         }
-        
+
         const iekartaName = option.getAttribute('data-name') || '';
         const iekartaVieta = option.getAttribute('data-vieta');
-        
+
         // Pārbaudīt vai atbilst vietas filtram
         const vietaMatch = !selectedVieta || iekartaVieta === selectedVieta;
-        
+
         // Pārbaudīt vai atbilst meklēšanas tekstam
         const searchMatch = !searchText || iekartaName.includes(searchText);
-        
+
         if (vietaMatch && searchMatch) {
             option.style.display = 'block';
             hasVisibleOptions = true;
@@ -560,7 +680,7 @@ function filterIekartas() {
             option.style.display = 'none';
         }
     });
-    
+
     // Ja nav redzamu opciju, rādīt ziņojumu
     if (!hasVisibleOptions && searchText) {
         // Pievienot pagaidu opciju ar ziņojumu
@@ -586,23 +706,23 @@ function filterIekartas() {
 function initSearchableSelect() {
     const searchInput = document.getElementById('iekartas_search');
     const iekartasSelect = document.getElementById('iekartas_id');
-    
+
     if (!searchInput || !iekartasSelect) return;
-    
+
     // Meklēšanas ievades notikums
     searchInput.addEventListener('input', function() {
         filterIekartas();
-        
+
         // Ja ir tikai viena redzama opcija (bez tukšās), automātiski izvēlēties to
         const visibleOptions = Array.from(iekartasSelect.options).filter(option => 
             option.style.display !== 'none' && option.value !== ''
         );
-        
+
         if (visibleOptions.length === 1) {
             iekartasSelect.value = visibleOptions[0].value;
         }
     });
-    
+
     // Kad izvēlas no select, atjaunot meklēšanas lauku
     iekartasSelect.addEventListener('change', function() {
         const selectedOption = this.options[this.selectedIndex];
@@ -612,14 +732,14 @@ function initSearchableSelect() {
             searchInput.value = '';
         }
     });
-    
+
     // Kad fokusē meklēšanas lauku, parādīt visas opcijas
     searchInput.addEventListener('focus', function() {
         iekartasSelect.classList.add('show');
         iekartasSelect.size = Math.min(8, iekartasSelect.options.length);
         filterIekartas(); // Atjaunot filtrāciju
     });
-    
+
     // Kad zaudē fokusu no meklēšanas lauka, paslēpt opcijas (ar aizkavi)
     searchInput.addEventListener('blur', function(e) {
         setTimeout(() => {
@@ -630,12 +750,12 @@ function initSearchableSelect() {
             }
         }, 150);
     });
-    
+
     // Kad fokusē select, neslēpt to
     iekartasSelect.addEventListener('focus', function() {
         iekartasSelect.classList.add('show');
     });
-    
+
     // Kad zaudē fokusu no select, paslēpt opcijas
     iekartasSelect.addEventListener('blur', function() {
         setTimeout(() => {
@@ -645,7 +765,7 @@ function initSearchableSelect() {
             }
         }, 150);
     });
-    
+
     // Peles klikšķis uz select opcijas
     iekartasSelect.addEventListener('click', function(e) {
         if (this.value) {
@@ -655,7 +775,7 @@ function initSearchableSelect() {
             iekartasSelect.size = 1;
         }
     });
-    
+
     // Klaviatūras navigācija
     searchInput.addEventListener('keydown', function(e) {
         if (e.key === 'ArrowDown') {
@@ -675,6 +795,32 @@ function initSearchableSelect() {
             }
         }
     });
+}
+
+// Pārslēgšana starp vienu un vairākiem mehāniķiem
+function toggleAssignmentType() {
+    const assignmentType = document.querySelector('input[name="assignment_type"]:checked').value;
+    const singleAssignment = document.getElementById('single-assignment');
+    const multipleAssignment = document.getElementById('multiple-assignment');
+    const singleSelect = document.getElementById('piešķirts_id');
+
+    if (assignmentType === 'single') {
+        singleAssignment.style.display = 'block';
+        multipleAssignment.style.display = 'none';
+        singleSelect.required = true;
+
+        // Noņemt required no checkboxiem
+        document.querySelectorAll('input[name="piešķirts_ids[]"]').forEach(cb => {
+            cb.required = false;
+        });
+    } else {
+        singleAssignment.style.display = 'none';
+        multipleAssignment.style.display = 'block';
+        singleSelect.required = false;
+        singleSelect.value = '';
+
+        // Nav nepieciešams required checkboxiem, validācija notiek serverī
+    }
 }
 </script>
 
@@ -704,6 +850,51 @@ function initSearchableSelect() {
 
 .btn i {
     margin-right: 5px;
+}
+
+/* Multi-mechanic assignment styles */
+.assignment-type-selector {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 10px;
+}
+
+.radio-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+.radio-label input[type="radio"] {
+    margin: 0;
+}
+
+.mechanic-checkboxes {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px;
+    background: #f9f9f9;
+}
+
+.checkbox-label {
+    display: block;
+    padding: 5px 0;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+.checkbox-label input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.checkbox-label:hover {
+    background: rgba(0, 123, 255, 0.1);
+    padding-left: 5px;
+    border-radius: 3px;
 }
 
 /* Meklējamā select stila */
@@ -759,23 +950,23 @@ function initSearchableSelect() {
     .row {
         flex-direction: column;
     }
-    
+
     .col-md-4,
     .col-md-6 {
         width: 100%;
     }
-    
+
     .d-flex {
         flex-direction: column;
         gap: 10px;
     }
-    
+
     .d-flex > div {
         display: flex;
         gap: 10px;
         justify-content: center;
     }
-    
+
     .searchable-select {
         max-height: 150px;
     }

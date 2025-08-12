@@ -37,14 +37,28 @@ try {
                        ELSE u.prioritate 
                    END as prioritate_display,
                    r.periodicitate,
-                   (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits
+                   (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
+                   CASE 
+                       WHEN u.daudziem_mehāniķiem = 1 THEN (
+                           SELECT up.statuss FROM uzdevumu_piešķīrumi up 
+                           WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+                       )
+                       ELSE u.statuss
+                   END as mans_statuss
             FROM uzdevumi u 
             LEFT JOIN vietas v ON u.vietas_id = v.id 
             LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-            WHERE u.piešķirts_id = ? AND u.statuss = 'Pabeigts'";
+            WHERE (
+                (u.piešķirts_id = ? AND u.statuss = 'Pabeigts') 
+                OR 
+                (u.daudziem_mehāniķiem = 1 AND EXISTS(
+                    SELECT 1 FROM uzdevumu_piešķīrumi up 
+                    WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss = 'Pabeigts'
+                ))
+            )";
 
-    $params = [$currentUser['id']];
-    $param_types = "i";
+    $params = [$currentUser['id'], $currentUser['id'], $currentUser['id']];
+    $param_types = "iii";
 
     // Pievienot meklēšanas filtru
     if (!empty($search)) {
@@ -96,8 +110,15 @@ try {
     // Iegūt kopējo ierakstu skaitu
     $count_sql = "SELECT COUNT(*) FROM uzdevumi u 
                   LEFT JOIN vietas v ON u.vietas_id = v.id 
-                  WHERE u.piešķirts_id = ? AND u.statuss = 'Pabeigts'";
-    $count_params = [$currentUser['id']];
+                  WHERE (
+                      (u.piešķirts_id = ? AND u.statuss = 'Pabeigts') 
+                      OR 
+                      (u.daudziem_mehāniķiem = 1 AND EXISTS(
+                          SELECT 1 FROM uzdevumu_piešķīrumi up 
+                          WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss = 'Pabeigts'
+                      ))
+                  )";
+    $count_params = [$currentUser['id'], $currentUser['id']];
     
     if (!empty($search)) {
         $count_sql .= " AND (u.nosaukums LIKE ? OR u.apraksts LIKE ?)";
@@ -135,9 +156,16 @@ try {
                     AVG(u.faktiskais_ilgums) as videjais_ilgums,
                     SUM(CASE WHEN MONTH(u.beigu_laiks) = MONTH(NOW()) AND YEAR(u.beigu_laiks) = YEAR(NOW()) THEN 1 ELSE 0 END) as somenes_pabeigti
                   FROM uzdevumi u 
-                  WHERE u.piešķirts_id = ? AND u.statuss = 'Pabeigts'";
+                  WHERE (
+                      (u.piešķirts_id = ? AND u.statuss = 'Pabeigts') 
+                      OR 
+                      (u.daudziem_mehāniķiem = 1 AND EXISTS(
+                          SELECT 1 FROM uzdevumu_piešķīrumi up 
+                          WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss = 'Pabeigts'
+                      ))
+                  )";
     $stats_stmt = $pdo->prepare($stats_sql);
-    $stats_stmt->execute([$currentUser['id']]);
+    $stats_stmt->execute([$currentUser['id'], $currentUser['id']]);
     $stats = $stats_stmt->fetch();
     
 } catch (PDOException $e) {
@@ -274,6 +302,9 @@ include 'includes/header.php';
                                         <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong>
                                         <?php if ($task['failu_skaits'] > 0): ?>
                                             <span class="badge badge-info" title="Pievienoti faili">📎 <?php echo $task['failu_skaits']; ?></span>
+                                        <?php endif; ?>
+                                        <?php if ($task['daudziem_mehāniķiem']): ?>
+                                            <span class="badge badge-primary" title="Grupas uzdevums">👥 Grupas darbs</span>
                                         <?php endif; ?>
                                         <?php if ($task['periodicitate']): ?>
                                             <span class="badge badge-secondary" title="Regulārais uzdevums"><?php echo $task['periodicitate']; ?></span>
@@ -500,6 +531,10 @@ function clearFilters() {
 
 .badge-secondary {
     background: var(--gray-500);
+}
+
+.badge-primary {
+    background: var(--primary-color);
 }
 
 .btn-group {

@@ -38,6 +38,25 @@ try {
     $all_params = array_merge($date_params, $mechanic_params, $location_params);
     
     // 1. Vispārīgā statistika
+    $general_filter_conditions = [];
+    $general_params = $date_params;
+    
+    if ($selected_mechanic > 0) {
+        $general_filter_conditions[] = "(u.piešķirts_id = ? OR EXISTS(
+            SELECT 1 FROM uzdevumu_piešķīrumi up 
+            WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+        ))";
+        $general_params[] = $selected_mechanic;
+        $general_params[] = $selected_mechanic;
+    }
+    
+    if ($selected_location > 0) {
+        $general_filter_conditions[] = "u.vietas_id = ?";
+        $general_params[] = $selected_location;
+    }
+    
+    $additional_filter = !empty($general_filter_conditions) ? 'AND ' . implode(' AND ', $general_filter_conditions) : '';
+    
     $stmt = $pdo->prepare("
         SELECT 
             COUNT(*) as kopā_uzdevumi,
@@ -48,9 +67,9 @@ try {
             AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums,
             SUM(CASE WHEN u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavētie
         FROM uzdevumi u
-        WHERE $date_filter $mechanic_filter $location_filter
+        WHERE $date_filter $additional_filter
     ");
-    $stmt->execute($all_params);
+    $stmt->execute($general_params);
     $vispārīgā_statistika = $stmt->fetch();
     
     // 2. Problēmu statistika
@@ -77,20 +96,40 @@ try {
         SELECT 
             l.id,
             CONCAT(l.vards, ' ', l.uzvards) as mehaniķis,
-            COUNT(u.id) as uzdevumu_skaits,
-            SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_skaits,
-            AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums,
-            SUM(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums ELSE 0 END) as kopējais_darba_laiks,
-            SUM(CASE WHEN u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavētie
+            COUNT(DISTINCT COALESCE(u1.id, u2.id)) as uzdevumu_skaits,
+            SUM(CASE 
+                WHEN u1.id IS NOT NULL AND u1.statuss = 'Pabeigts' THEN 1
+                WHEN u2.id IS NOT NULL AND up.statuss = 'Pabeigts' THEN 1
+                ELSE 0 
+            END) as pabeigto_skaits,
+            AVG(CASE 
+                WHEN u1.faktiskais_ilgums IS NOT NULL THEN u1.faktiskais_ilgums
+                WHEN u2.faktiskais_ilgums IS NOT NULL AND up.statuss = 'Pabeigts' THEN u2.faktiskais_ilgums
+            END) as vidējais_ilgums,
+            SUM(CASE 
+                WHEN u1.faktiskais_ilgums IS NOT NULL THEN u1.faktiskais_ilgums
+                WHEN u2.faktiskais_ilgums IS NOT NULL AND up.statuss = 'Pabeigts' THEN u2.faktiskais_ilgums / (
+                    SELECT COUNT(*) FROM uzdevumu_piešķīrumi up2 
+                    WHERE up2.uzdevuma_id = u2.id AND up2.statuss = 'Pabeigts'
+                )
+                ELSE 0 
+            END) as kopējais_darba_laiks,
+            SUM(CASE 
+                WHEN u1.id IS NOT NULL AND u1.jabeidz_lidz < NOW() AND u1.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1
+                WHEN u2.id IS NOT NULL AND u2.jabeidz_lidz < NOW() AND up.statuss NOT IN ('Pabeigts', 'Noņemts') AND u2.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1
+                ELSE 0 
+            END) as nokavētie
         FROM lietotaji l
-        LEFT JOIN uzdevumi u ON l.id = u.piešķirts_id AND $date_filter $location_filter
+        LEFT JOIN uzdevumi u1 ON l.id = u1.piešķirts_id AND DATE(u1.izveidots) BETWEEN ? AND ? $location_filter
+        LEFT JOIN uzdevumu_piešķīrumi up ON l.id = up.mehāniķa_id AND up.statuss != 'Noņemts'
+        LEFT JOIN uzdevumi u2 ON up.uzdevuma_id = u2.id AND u2.daudziem_mehāniķiem = 1 AND DATE(u2.izveidots) BETWEEN ? AND ? $location_filter
         WHERE l.loma = 'Mehāniķis' AND l.statuss = 'Aktīvs'
         " . ($selected_mechanic > 0 ? "AND l.id = ?" : "") . "
         GROUP BY l.id, l.vards, l.uzvards
         ORDER BY pabeigto_skaits DESC, uzdevumu_skaits DESC
     ");
     
-    $productivity_params = array_merge($date_params, $location_params);
+    $productivity_params = array_merge($date_params, $location_params, $date_params, $location_params);
     if ($selected_mechanic > 0) {
         $productivity_params[] = $selected_mechanic;
     }
@@ -129,11 +168,11 @@ try {
             SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti,
             AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums
         FROM uzdevumi u
-        WHERE $date_filter $mechanic_filter $location_filter
+        WHERE $date_filter $additional_filter
         GROUP BY u.prioritate
         ORDER BY FIELD(u.prioritate, 'Kritiska', 'Augsta', 'Vidēja', 'Zema')
     ");
-    $stmt->execute($all_params);
+    $stmt->execute($general_params);
     $prioritāšu_sadalījums = $stmt->fetchAll();
     
     // 6. Uzdevumu kategoriju statistika
@@ -144,13 +183,13 @@ try {
             SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigto_skaits,
             AVG(CASE WHEN u.faktiskais_ilgums IS NOT NULL THEN u.faktiskais_ilgums END) as vidējais_ilgums
         FROM uzdevumu_kategorijas k
-        LEFT JOIN uzdevumi u ON k.id = u.kategorijas_id AND $date_filter $mechanic_filter $location_filter
+        LEFT JOIN uzdevumi u ON k.id = u.kategorijas_id AND $date_filter $additional_filter
         WHERE k.aktīvs = 1
         GROUP BY k.id, k.nosaukums
         HAVING uzdevumu_skaits > 0
         ORDER BY uzdevumu_skaits DESC
     ");
-    $stmt->execute($all_params);
+    $stmt->execute($general_params);
     $kategoriju_statistika = $stmt->fetchAll();
     
     // 7. Laika analīze (pa dienām)
@@ -159,14 +198,15 @@ try {
             DATE(u.izveidots) as datums,
             COUNT(*) as izveidoti_uzdevumi,
             SUM(CASE WHEN u.statuss = 'Pabeigts' THEN 1 ELSE 0 END) as pabeigti_uzdevumi,
-            COUNT(DISTINCT u.piešķirts_id) as aktīvi_mehāniķi
+            COUNT(DISTINCT COALESCE(u.piešķirts_id, up.mehāniķa_id)) as aktīvi_mehāniķi
         FROM uzdevumi u
-        WHERE $date_filter $mechanic_filter $location_filter
+        LEFT JOIN uzdevumu_piešķīrumi up ON u.id = up.uzdevuma_id AND up.statuss != 'Noņemts'
+        WHERE $date_filter $additional_filter
         GROUP BY DATE(u.izveidots)
         ORDER BY datums DESC
         LIMIT 30
     ");
-    $stmt->execute($all_params);
+    $stmt->execute($general_params);
     $dienas_statistika = $stmt->fetchAll();
     
     // 8. Regulāro uzdevumu statistika

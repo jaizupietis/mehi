@@ -259,13 +259,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && hasRole(ROLE_MECHANIC)) {
                     $total_time = $stmt->fetchColumn() ?: 0;
 
                     // Atjaunot uzdevuma statusu ar papildus informāciju
-                    $final_time = null;
-                    if (!empty($faktiskais_ilgums) && is_numeric($faktiskais_ilgums)) {
-                        $final_time = floatval($faktiskais_ilgums);
-                    } elseif ($total_time > 0) {
-                        $final_time = $total_time;
-                    }
-
                     $stmt = $pdo->prepare("
                         UPDATE uzdevumi 
                         SET statuss = 'Pabeigts', 
@@ -274,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && hasRole(ROLE_MECHANIC)) {
                             faktiskais_ilgums = ?
                         WHERE id = ?
                     ");
-                    $stmt->execute([$komentars, $final_time, $task_id]);
+                    $stmt->execute([$komentars, $faktiskais_ilgums ?? $total_time, $task_id]);
 
                     // Pievienot vēsturi
                     $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
@@ -350,14 +343,13 @@ try {
         $stmt = $pdo->prepare("
             SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums,
                    CASE 
-                       WHEN u.daudziem_mehāniķiem = 1 THEN (
-                           SELECT GROUP_CONCAT(CONCAT(LEFT(lm.vards, 1), '. ', lm.uzvards) SEPARATOR ', ')
+                       WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
+                       ELSE (
+                           SELECT GROUP_CONCAT(CONCAT(lm.vards, ' ', lm.uzvards) SEPARATOR ', ')
                            FROM uzdevumu_piešķīrumi up
                            JOIN lietotaji lm ON up.mehāniķa_id = lm.id
                            WHERE up.uzdevuma_id = u.id AND up.statuss != 'Noņemts'
                        )
-                       WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
-                       ELSE 'Nav piešķirts'
                    END as mehaniķa_vards
             FROM uzdevumi u
             LEFT JOIN vietas v ON u.vietas_id = v.id
@@ -375,14 +367,13 @@ try {
             SELECT u.*, v.nosaukums as vietas_nosaukums, i.nosaukums as iekartas_nosaukums,
                    r.periodicitate,
                    CASE 
-                       WHEN u.daudziem_mehāniķiem = 1 THEN (
-                           SELECT GROUP_CONCAT(CONCAT(LEFT(lm.vards, 1), '. ', lm.uzvards) SEPARATOR ', ')
+                       WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
+                       ELSE (
+                           SELECT GROUP_CONCAT(CONCAT(lm.vards, ' ', lm.uzvards) SEPARATOR ', ')
                            FROM uzdevumu_piešķīrumi up
                            JOIN lietotaji lm ON up.mehāniķa_id = lm.id
                            WHERE up.uzdevuma_id = u.id AND up.statuss != 'Noņemts'
                        )
-                       WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
-                       ELSE 'Nav piešķirts'
                    END as mehaniķa_vards
             FROM uzdevumi u
             LEFT JOIN vietas v ON u.vietas_id = v.id
@@ -893,12 +884,7 @@ include 'includes/header.php';
                                             <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong><br>
                                             <small class="text-muted"><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></small>
                                         </td>
-                                        <td>
-                                            <?php if ($task['daudziem_mehāniķiem']): ?>
-                                                <span class="group-work-icon" title="Grupas darbs">👥</span>
-                                            <?php endif; ?>
-                                            <?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?>
-                                        </td>
+                                        <td><?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?></td>
                                         <td>
                                             <span class="priority-badge <?php echo getPriorityClass($task['prioritate']); ?>">
                                                 <?php echo $task['prioritate']; ?>
@@ -947,12 +933,7 @@ include 'includes/header.php';
                                             <strong><?php echo htmlspecialchars($task['nosaukums']); ?></strong><br>
                                             <small class="text-muted"><?php echo htmlspecialchars($task['vietas_nosaukums'] ?? ''); ?></small>
                                         </td>
-                                        <td>
-                                            <?php if ($task['daudziem_mehāniķiem']): ?>
-                                                <span class="group-work-icon" title="Grupas darbs">👥</span>
-                                            <?php endif; ?>
-                                            <?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?>
-                                        </td>
+                                        <td><?php echo htmlspecialchars($task['mehaniķa_vards'] ?? ''); ?></td>
                                         <td>
                                             <small class="text-muted"><?php echo $task['periodicitate']; ?></small>
                                         </td>
@@ -1299,12 +1280,6 @@ function changeTaskStatus(taskId, newStatus) {
     margin-top: 5px;
 }
 
-/* Grupas ikonas stils */
-.group-work-icon {
-    margin-right: 5px;
-    font-size: 0.9em;
-    vertical-align: middle;
-}
 
 .row {
     display: flex;
@@ -1343,13 +1318,10 @@ function changeTaskStatus(taskId, newStatus) {
     background-color: rgba(220, 53, 69, 0.1);
 }
 
-/* Mazāks fonts mehāniķu vārdiem un lielāks platums */
+/* Mazāks fonts mehāniķu vārdiem */
 .table td:nth-child(2) {
     font-size: 0.85em;
     color: #666;
-    min-width: 180px;
-    max-width: 220px;
-    word-wrap: break-word;
 }
 
 @media (max-width: 768px) {

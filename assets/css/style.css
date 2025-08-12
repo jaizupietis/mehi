@@ -165,6 +165,8 @@ nav {
     background: var(--white);
     padding: var(--spacing-sm) 0;
     box-shadow: var(--shadow-sm);
+    position: relative;
+    z-index: 999;
 }
 
 .nav-menu {
@@ -622,6 +624,26 @@ body.pwa-mode {
 /* Mobile navigation */
 .mobile-menu-toggle {
     display: none;
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: var(--white);
+    cursor: pointer;
+    padding: var(--spacing-sm);
+    border-radius: var(--border-radius);
+    transition: background-color 0.3s ease;
+    z-index: 1001;
+    position: relative;
+}
+
+.mobile-menu-toggle:hover,
+.mobile-menu-toggle:focus {
+    background: rgba(255, 255, 255, 0.1);
+    outline: none;
+}
+
+.mobile-menu-toggle:active {
+    background: rgba(255, 255, 255, 0.2);
 }
 
 /* Touch feedback */
@@ -638,25 +660,89 @@ body.pwa-mode {
     }
 
     .header-content {
-        flex-direction: column;
-        gap: var(--spacing-sm);
+        justify-content: space-between;
+        align-items: center;
+        position: relative;
     }
 
     .mobile-menu-toggle {
-        display: block;
+        display: block !important;
+        order: 3;
+        margin-left: auto;
+    }
+
+    .logo {
+        order: 1;
+        flex: 1;
+    }
+
+    .user-info {
+        order: 2;
+        gap: var(--spacing-sm);
+        margin-right: var(--spacing-sm);
+    }
+
+    .user-info .username,
+    .user-info .role {
+        display: none;
+    }
+
+    nav {
+        position: relative;
+        overflow: visible;
+        z-index: 999;
     }
 
     .nav-menu {
+        display: none;
         flex-direction: column;
-        gap: var(--spacing-sm);
+        gap: 0;
         background: var(--white);
         position: absolute;
         top: 100%;
         left: 0;
         right: 0;
-        padding: var(--spacing-md);
-        box-shadow: var(--shadow-md);
+        padding: 0;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         z-index: 1000;
+        margin: 0;
+        border-radius: 0 0 var(--border-radius) var(--border-radius);
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-in-out;
+        width: 100%;
+    }
+
+    .nav-menu.show {
+        display: flex;
+        max-height: 500px;
+        padding: var(--spacing-sm) 0;
+    }
+
+    .nav-menu li {
+        width: 100%;
+        margin: 0;
+    }
+
+    .nav-menu li a {
+        display: block;
+        width: 100%;
+        padding: var(--spacing-md);
+        text-align: left;
+        border-bottom: 1px solid var(--gray-200);
+        margin: 0;
+        border-radius: 0;
+        transition: background-color 0.3s ease;
+    }
+
+    .nav-menu li:last-child a {
+        border-bottom: none;
+    }
+
+    .nav-menu li a:hover,
+    .nav-menu li a.active {
+        background: var(--secondary-color);
+        color: var(--white);
     }
 
     .card-body {
@@ -720,6 +806,21 @@ body.pwa-mode {
     .modal-body,
     .modal-footer {
         padding: var(--spacing-md);
+    }
+    
+    /* Papildu fiksējumi portrait orientācijai */
+    nav {
+        position: relative !important;
+        width: 100%;
+    }
+    
+    .nav-menu {
+        position: absolute !important;
+        top: 100% !important;
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        transform: none !important;
     }
 }
 

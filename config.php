@@ -368,13 +368,13 @@ function sendProblemPushNotification($problemId, $problemTitle) {
 // Funkcija kritisku problēmu automātiskai pārvēršanai uzdevumā
 function createCriticalTaskFromProblem($problemId, $problemData) {
     global $pdo;
-    
+
     try {
         // Iegūt visus pašlaik strādājošos mehāniķus
         $currentTime = date('H:i:s');
         $currentDate = date('Y-m-d');
         $currentDay = date('N'); // 1=Pirmdiena, 7=Svētdiena
-        
+
         $stmt = $pdo->prepare("
             SELECT DISTINCT m.id, CONCAT(m.vards, ' ', m.uzvards) as pilns_vards
             FROM lietotaji m
@@ -388,10 +388,10 @@ function createCriticalTaskFromProblem($problemId, $problemData) {
                     (dg.maina IS NULL AND ? BETWEEN '07:00:00' AND '16:59:59')
                 )
         ");
-        
+
         $stmt->execute([$currentDate, $currentTime, $currentTime, $currentTime, $currentTime]);
         $workingMechanics = $stmt->fetchAll();
-        
+
         if (empty($workingMechanics)) {
             // Ja neviens nestrādā, piešķirt visiem aktīvajiem mehāniķiem
             $stmt = $pdo->query("
@@ -402,14 +402,14 @@ function createCriticalTaskFromProblem($problemId, $problemData) {
             ");
             $workingMechanics = $stmt->fetchAll();
         }
-        
+
         if (empty($workingMechanics)) {
             error_log("Nav aktīvu mehāniķu kritiskā uzdevuma izveidošanai. Pašreizējais laiks: $currentTime, datums: $currentDate");
             return false;
         }
-        
+
         error_log("Atrasti " . count($workingMechanics) . " strādājoši mehāniķi kritiskā uzdevuma izveidošanai");
-        
+
         // Izveidot uzdevumu katram mehāniķim
         $createdTasks = [];
         foreach ($workingMechanics as $mechanic) {
@@ -419,12 +419,12 @@ function createCriticalTaskFromProblem($problemId, $problemData) {
                  piešķirts_id, izveidoja_id, problemas_id, paredzamais_ilgums)
                 VALUES (?, ?, 'Ikdienas', ?, ?, 'Kritiska', ?, 1, ?, ?)
             ");
-            
+
             $taskTitle = "KRITISKS: " . $problemData['nosaukums'];
             $taskDescription = "APTURĒTA RAŽOŠANA!\n\n" . $problemData['apraksts'] . 
                               "\n\nŠis uzdevums ir automātiski izveidots no kritiskas problēmas. " .
                               "Tiklīdz kāds mehāniķis sāks darbu, uzdevums tiks noņemts pārējiem.";
-            
+
             $stmt->execute([
                 $taskTitle,
                 $taskDescription,
@@ -434,14 +434,14 @@ function createCriticalTaskFromProblem($problemId, $problemData) {
                 $problemId,
                 $problemData['aptuvenais_ilgums']
             ]);
-            
+
             $taskId = $pdo->lastInsertId();
             $createdTasks[] = [
                 'task_id' => $taskId,
                 'mechanic_id' => $mechanic['id'],
                 'mechanic_name' => $mechanic['pilns_vards']
             ];
-            
+
             // Izveidot paziņojumu mehāniķim
             createNotification(
                 $mechanic['id'],
@@ -452,71 +452,69 @@ function createCriticalTaskFromProblem($problemId, $problemData) {
                 $taskId
             );
         }
-        
+
         // NEATJAUNOT problēmas statusu uzreiz - lai paliek "Jauna" līdz mehāniķis sāk darbu
         // Problēma tiks atjaunota uz "Pārvērsta uzdevumā" tikai tad, kad kāds mehāniķis sāks darbu
-        
+
         // Ierakstīt log failā
         error_log("Kritiska problēma ID:$problemId automātiski pārvērsta uzdevumā. Izveidoti " . count($createdTasks) . " uzdevumi.");
-        
+
         return $createdTasks;
-        
+
     } catch (Exception $e) {
         error_log("Kļūda veidojot kritisku uzdevumu: " . $e->getMessage());
         return false;
     }
 }
 
+// Function removed - using the one in my_tasks.php instead to avoid redeclaration
+
 // Funkcija kritisko uzdevumu noņemšanai citiem mehāniķiem
 function removeCriticalTaskFromOtherMechanics($startedTaskId, $mechanicId) {
     global $pdo;
-    
+
     try {
-        // Iegūt problēmas ID no sāktā uzdevuma
-        $stmt = $pdo->prepare("SELECT problemas_id FROM uzdevumi WHERE id = ?");
-        $stmt->execute([$startedTaskId]);
-        $problemId = $stmt->fetchColumn();
-        
-        if (!$problemId) {
-            return false;
-        }
-        
-        // Dzēst visus citus uzdevumus ar šo problēmas ID, izņemot sākto
+        // Iegūt visus mehāniķus, kuriem piešķirts šis kritiskais uzdevums
         $stmt = $pdo->prepare("
+            SELECT DISTINCT uzvards, vards, id
+            FROM lietotaji
+            JOIN uzdevumi ON lietotaji.id = uzdevumi.piešķirts_id
+            WHERE uzdevumi.problemas_id = (SELECT problemas_id FROM uzdevumi WHERE id = ?)
+                AND uzdevumi.id != ?
+                AND uzdevumi.statuss = 'Jauns'
+                AND uzdevumi.prioritate = 'Kritiska'
+                AND lietotaji.loma = 'Mehāniķis'
+                AND lietotaji.statuss = 'Aktīvs'
+        ");
+        $stmt->execute([$startedTaskId, $startedTaskId]);
+        $affectedMechanics = $stmt->fetchAll();
+
+        // Izdzēst visus citus ar šo problēmu saistītos uzdevumus
+        $deleteStmt = $pdo->prepare("
             DELETE FROM uzdevumi 
-            WHERE problemas_id = ? 
-                AND id != ? 
+            WHERE problemas_id = (SELECT problemas_id FROM uzdevumi WHERE id = ?)
+                AND id != ?
                 AND statuss = 'Jauns'
                 AND prioritate = 'Kritiska'
         ");
-        $deletedCount = $stmt->execute([$problemId, $startedTaskId]);
-        
-        // Paziņot pārējiem mehāniķiem
-        $stmt = $pdo->prepare("
-            SELECT DISTINCT piešķirts_id 
-            FROM uzdevumi 
-            WHERE problemas_id = ? 
-                AND id != ? 
-                AND statuss = 'Jauns'
-        ");
-        $stmt->execute([$problemId, $startedTaskId]);
-        $affectedMechanics = $stmt->fetchAll();
-        
+        $deleteStmt->execute([$startedTaskId, $startedTaskId]);
+
+        // Nosūtīt paziņojumus pārējiem mehāniķiem
         foreach ($affectedMechanics as $mechanic) {
             createNotification(
-                $mechanic['piešķirts_id'],
-                'Kritisks uzdevums sākts',
-                'Kritiskais uzdevums ir sākts cita mehāniķa. Jūsu uzdevums ir noņemts.',
-                'Sistēmas',
-                null,
+                $mechanic['id'],
+                'KRITISKS: Uzdevums noņemts',
+                "Kritisks uzdevums ir noņemts, jo to sācis cits mehāniķis",
+                'Statusa maiņa',
+                'Uzdevums',
                 null
             );
         }
-        
+
         error_log("Noņemti kritiskie uzdevumi citiem mehāniķiem. Uzdevums ID:$startedTaskId sākts.");
-        
+
         return true;
-        
+
     } catch (Exception $e) {
         error_log("Kļūda noņemot kritiskos uzdevumus: " . $e->getMessage());
         return false;

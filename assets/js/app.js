@@ -21,11 +21,23 @@ document.addEventListener('DOMContentLoaded', function() {
     window.addEventListener('online', updateOnlineStatus);
     window.addEventListener('offline', updateOnlineStatus);
 
-    // Mobilā navigācija
+    // Mobilā navigācija - inicializēt nekavējoties un ar delay Edge pārlūkam
     initMobileNavigation();
+    
+    // Papildu inicializācija pēc 500ms Edge un citu pārlūku dēļ
+    setTimeout(function() {
+        initMobileNavigation();
+    }, 500);
 
     // Reāllaika paziņojumu sistēma
     initRealTimeNotifications();
+});
+
+// Arī window load event Edge pārlūkam
+window.addEventListener('load', function() {
+    setTimeout(function() {
+        initMobileNavigation();
+    }, 100);
 });
 
 // Natīvās aplikācijas inicializācija
@@ -324,28 +336,79 @@ function createStatusIndicator() {
 
 // Mobilā navigācija
 function initMobileNavigation() {
-    // Hamburger izvēlne mobilajām ierīcēm
     const nav = document.querySelector('nav .nav-menu');
-    if (nav && window.innerWidth <= 768) {
-        const hamburger = document.createElement('button');
+    const header = document.querySelector('header .header-content');
+    
+    if (!nav || !header) {
+        console.log('Nav or header not found');
+        return;
+    }
+    
+    // Vienmēr izveidot hamburger pogu, ja tās nav
+    let hamburger = header.querySelector('.mobile-menu-toggle');
+    
+    if (!hamburger) {
+        hamburger = document.createElement('button');
         hamburger.innerHTML = '☰';
         hamburger.className = 'mobile-menu-toggle';
-        hamburger.style.cssText = `
-            display: block;
-            background: none;
-            border: none;
-            font-size: 24px;
-            padding: 10px;
-            cursor: pointer;
-        `;
-
-        hamburger.addEventListener('click', function() {
-            nav.style.display = nav.style.display === 'none' ? 'flex' : 'none';
-        });
-
-        nav.parentNode.insertBefore(hamburger, nav);
-        nav.style.display = 'none';
+        hamburger.setAttribute('aria-label', 'Toggle menu');
+        hamburger.setAttribute('type', 'button');
+        
+        // Ievietot hamburger header beigās
+        header.appendChild(hamburger);
+        console.log('Hamburger button created');
     }
+
+    // Notīrīt iepriekšējos event listeners
+    const newHamburger = hamburger.cloneNode(true);
+    hamburger.parentNode.replaceChild(newHamburger, hamburger);
+    hamburger = newHamburger;
+
+    // Pievienot click event listener
+    hamburger.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        console.log('Hamburger clicked');
+        
+        const isShown = nav.classList.contains('show');
+        
+        if (isShown) {
+            nav.classList.remove('show');
+            hamburger.innerHTML = '☰';
+        } else {
+            nav.classList.add('show');
+            hamburger.innerHTML = '✕';
+        }
+    });
+
+    // Aizvērt izvēlni, ja klikšķina ārpus tās
+    document.addEventListener('click', function(e) {
+        if (!nav.contains(e.target) && !hamburger.contains(e.target)) {
+            if (nav.classList.contains('show')) {
+                nav.classList.remove('show');
+                hamburger.innerHTML = '☰';
+            }
+        }
+    });
+
+    // Aizvērt izvēlni, ja klikšķina uz saites
+    nav.addEventListener('click', function(e) {
+        if (e.target.tagName === 'A') {
+            nav.classList.remove('show');
+            hamburger.innerHTML = '☰';
+        }
+    });
+
+    // Pārbaudīt ekrāna izmēru maiņu
+    window.addEventListener('resize', function() {
+        if (window.innerWidth > 768) {
+            nav.classList.remove('show');
+            hamburger.innerHTML = '☰';
+        }
+    });
+    
+    console.log('Mobile navigation initialized');
 }
 
 // Swipe funkcionalitāte mobilajām ierīcēm

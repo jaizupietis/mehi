@@ -27,21 +27,21 @@ $success = false;
 // Apstrādāt POST darbības
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'change_status' && isset($_POST['task_id'], $_POST['new_status'])) {
         $task_id = intval($_POST['task_id']);
         $new_status = sanitizeInput($_POST['new_status']);
         $komentars = sanitizeInput($_POST['komentars'] ?? '');
-        
+
         if (in_array($new_status, ['Jauns', 'Procesā', 'Pabeigts', 'Atcelts', 'Atlikts'])) {
             try {
                 $pdo->beginTransaction();
-                
+
                 // Iegūt pašreizējo statusu
                 $stmt = $pdo->prepare("SELECT statuss, piešķirts_id FROM uzdevumi WHERE id = ?");
                 $stmt->execute([$task_id]);
                 $task = $stmt->fetch();
-                
+
                 if ($task) {
                     // Atjaunot uzdevuma statusu
                     $stmt = $pdo->prepare("
@@ -51,7 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         WHERE id = ?
                     ");
                     $stmt->execute([$new_status, $new_status, $task_id]);
-                    
+
                     // Pievienot vēsturi
                     $stmt = $pdo->prepare("
                         INSERT INTO uzdevumu_vesture 
@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         VALUES (?, ?, ?, ?, ?)
                     ");
                     $stmt->execute([$task_id, $task['statuss'], $new_status, $komentars, $currentUser['id']]);
-                    
+
                     // Izveidot paziņojumu mehāniķim
                     createNotification(
                         $task['piešķirts_id'],
@@ -71,51 +71,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
                 	// Push notification
                     sendStatusChangePushNotification($task_id, $task['piešķirts_id'], $task['nosaukums'], $new_status, $komentars);
-                    
+
                     $pdo->commit();
                     setFlashMessage('success', 'Uzdevuma statuss veiksmīgi mainīts!');
                 } else {
                     $errors[] = 'Uzdevums nav atrasts.';
                 }
-                
+
             } catch (PDOException $e) {
                 $pdo->rollBack();
                 $errors[] = 'Kļūda mainot statusu: ' . $e->getMessage();
             }
         }
     }
-    
+
     if ($action === 'delete_task' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
-        
+
         try {
             $pdo->beginTransaction();
-            
+
             // Pārbaudīt vai uzdevumu var dzēst (tikai jauns status)
             $stmt = $pdo->prepare("SELECT statuss, piešķirts_id FROM uzdevumi WHERE id = ?");
             $stmt->execute([$task_id]);
             $task = $stmt->fetch();
-            
+
             if ($task && $task['statuss'] === 'Jauns') {
                 // Dzēst saistītos failus
                 $stmt = $pdo->prepare("SELECT faila_cels FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = ?");
                 $stmt->execute([$task_id]);
                 $files = $stmt->fetchAll();
-                
+
                 foreach ($files as $file) {
                     if (file_exists($file['faila_cels'])) {
                         unlink($file['faila_cels']);
                     }
                 }
-                
+
                 // Dzēst failu ierakstus
                 $stmt = $pdo->prepare("DELETE FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = ?");
                 $stmt->execute([$task_id]);
-                
+
                 // Dzēst uzdevumu
                 $stmt = $pdo->prepare("DELETE FROM uzdevumi WHERE id = ?");
                 $stmt->execute([$task_id]);
-                
+
                 // Paziņot mehāniķim
                 createNotification(
                     $task['piešķirts_id'],
@@ -125,13 +125,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     null,
                     null
                 );
-                
+
                 $pdo->commit();
                 setFlashMessage('success', 'Uzdevums veiksmīgi dzēsts!');
             } else {
                 $errors[] = 'Var dzēst tikai jaunus uzdevumus.';
             }
-            
+
         } catch (PDOException $e) {
             $pdo->rollBack();
             $errors[] = 'Kļūda dzēšot uzdevumu: ' . $e->getMessage();
@@ -171,56 +171,70 @@ try {
     // Iegūt filtru datus
     $stmt = $pdo->query("SELECT id, nosaukums FROM vietas WHERE aktīvs = 1 ORDER BY nosaukums");
     $vietas = $stmt->fetchAll();
-    
+
     $stmt = $pdo->query("SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE loma = 'Mehāniķis' AND statuss = 'Aktīvs' ORDER BY vards, uzvards");
     $mehaniki = $stmt->fetchAll();
-    
+
     // Būvēt vaicājumu
     $where_conditions = [];
     $params = [];
-    
+
     if (!empty($filters['statuss'])) {
         $where_conditions[] = "u.statuss = ?";
         $params[] = $filters['statuss'];
     }
-    
+
     if (!empty($filters['prioritate'])) {
         $where_conditions[] = "u.prioritate = ?";
         $params[] = $filters['prioritate'];
     }
-    
+
     if ($filters['vieta'] > 0) {
         $where_conditions[] = "u.vietas_id = ?";
         $params[] = $filters['vieta'];
     }
-    
+
     if ($filters['mehaniķis'] > 0) {
-        $where_conditions[] = "u.piešķirts_id = ?";
+        $where_conditions[] = "(u.piešķirts_id = ? OR EXISTS (
+            SELECT 1 FROM uzdevumu_piešķīrumi up 
+            WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+        ))";
+        $params[] = $filters['mehaniķis'];
         $params[] = $filters['mehaniķis'];
     }
-    
+
     if (!empty($filters['veids'])) {
         $where_conditions[] = "u.veids = ?";
         $params[] = $filters['veids'];
     }
-    
+
     if (!empty($filters['meklēt'])) {
         $where_conditions[] = "(u.nosaukums LIKE ? OR u.apraksts LIKE ?)";
         $params[] = '%' . $filters['meklēt'] . '%';
         $params[] = '%' . $filters['meklēt'] . '%';
     }
-    
+
     $where_clause = !empty($where_conditions) ? 'WHERE ' . implode(' AND ', $where_conditions) : '';
-    
+
     // Galvenais vaicājums (bez regulāro uzdevumu ierobežojuma)
     $sql = "
         SELECT u.*, 
                v.nosaukums as vietas_nosaukums,
                i.nosaukums as iekartas_nosaukums,
-               CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards,
+               CASE 
+                   WHEN u.daudziem_mehāniķiem = 1 THEN (
+                       SELECT GROUP_CONCAT(CONCAT(LEFT(lm.vards, 1), '. ', lm.uzvards) SEPARATOR '<br>')
+                       FROM uzdevumu_piešķīrumi up
+                       JOIN lietotaji lm ON up.mehāniķa_id = lm.id
+                       WHERE up.uzdevuma_id = u.id AND up.statuss != 'Noņemts'
+                   )
+                   WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
+                   ELSE 'Nav piešķirts'
+               END as mehaniķa_vards,
                CONCAT(e.vards, ' ', e.uzvards) as izveidoja_vards,
                r.periodicitate,
-               (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits
+               (SELECT COUNT(*) FROM faili WHERE tips = 'Uzdevums' AND saistitas_id = u.id) as failu_skaits,
+               u.daudziem_mehāniķiem
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
@@ -231,11 +245,11 @@ try {
         ORDER BY u.$sort $order
         LIMIT $limit OFFSET $offset
     ";
-    
+
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $uzdevumi = $stmt->fetchAll();
-    
+
     // Iegūt kopējo ierakstu skaitu
     $count_sql = "
         SELECT COUNT(*) 
@@ -251,7 +265,7 @@ try {
     $count_stmt->execute($params);
     $total_records = $count_stmt->fetchColumn();
     $total_pages = ceil($total_records / $limit);
-    
+
 } catch (PDOException $e) {
     $errors[] = "Kļūda ielādējot uzdevumus: " . $e->getMessage();
     $uzdevumi = [];
@@ -283,7 +297,7 @@ include 'includes/header.php';
                 <span id="searchIndicator" class="search-indicator" style="display: none;">🔍</span>
             </div>
         </div>
-        
+
         <div class="filter-col">
             <label for="statuss" class="form-label">Statuss</label>
             <select id="statuss" name="statuss" class="form-control">
@@ -295,7 +309,7 @@ include 'includes/header.php';
                 <option value="Atlikts" <?php echo $filters['statuss'] === 'Atlikts' ? 'selected' : ''; ?>>Atlikts</option>
             </select>
         </div>
-        
+
         <div class="filter-col">
             <label for="prioritate" class="form-label">Prioritāte</label>
             <select id="prioritate" name="prioritate" class="form-control">
@@ -306,7 +320,7 @@ include 'includes/header.php';
                 <option value="Zema" <?php echo $filters['prioritate'] === 'Zema' ? 'selected' : ''; ?>>Zema</option>
             </select>
         </div>
-        
+
         <div class="filter-col">
             <label for="vieta" class="form-label">Vieta</label>
             <select id="vieta" name="vieta" class="form-control">
@@ -318,7 +332,7 @@ include 'includes/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
-        
+
         <div class="filter-col">
             <label for="mehaniķis" class="form-label">Mehāniķis</label>
             <select id="mehaniķis" name="mehaniķis" class="form-control">
@@ -330,7 +344,7 @@ include 'includes/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
-        
+
         <div class="filter-col">
             <label for="veids" class="form-label">Veids</label>
             <select id="veids" name="veids" class="form-control">
@@ -339,7 +353,7 @@ include 'includes/header.php';
                 <option value="Regulārais" <?php echo $filters['veids'] === 'Regulārais' ? 'selected' : ''; ?>>Regulārais</option>
             </select>
         </div>
-        
+
         <div class="filter-col" style="display: flex; gap: 0.5rem; align-items: end;">
             <button type="submit" class="btn btn-primary">Filtrēt</button>
             <button type="button" onclick="clearFilters()" class="btn btn-secondary">Notīrīt</button>
@@ -418,7 +432,12 @@ include 'includes/header.php';
                                         <?php echo htmlspecialchars(substr($uzdevums['apraksts'], 0, 100)) . (strlen($uzdevums['apraksts']) > 100 ? '...' : ''); ?>
                                     </small>
                                 </td>
-                                <td><?php echo htmlspecialchars($uzdevums['mehaniķa_vards']); ?></td>
+                                <td>
+                                    <?php if ($uzdevums['daudziem_mehāniķiem']): ?>
+                                        <span class="group-work-icon" title="Grupas darbs">👥</span>
+                                    <?php endif; ?>
+                                    <?php echo $uzdevums['mehaniķa_vards']; ?>
+                                </td>
                                 <td>
                                     <span class="priority-badge <?php echo getPriorityClass($uzdevums['prioritate']); ?>">
                                         <?php echo $uzdevums['prioritate']; ?>
@@ -442,11 +461,11 @@ include 'includes/header.php';
                                 <td>
                                     <div class="btn-group">
                                         <button onclick="viewTask(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-info" title="Skatīt detaļas">👁</button>
-                                        
+
                                         <?php if ($uzdevums['statuss'] !== 'Pabeigts' && $uzdevums['statuss'] !== 'Atcelts'): ?>
                                             <button onclick="editTaskStatus(<?php echo $uzdevums['id']; ?>, '<?php echo $uzdevums['statuss']; ?>')" class="btn btn-sm btn-warning" title="Mainīt statusu">✏</button>
                                         <?php endif; ?>
-                                        
+
                                         <?php if ($uzdevums['statuss'] === 'Jauns'): ?>
                                             <button onclick="confirmAction('Vai tiešām vēlaties dzēst šo uzdevumu?', function() { deleteTask(<?php echo $uzdevums['id']; ?>); })" 
                                                     class="btn btn-sm btn-danger" title="Dzēst uzdevumu">🗑</button>
@@ -468,11 +487,11 @@ include 'includes/header.php';
         <?php if ($page > 1): ?>
             <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page - 1])); ?>">&laquo; Iepriekšējā</a>
         <?php endif; ?>
-        
+
         <?php
         $start = max(1, $page - 2);
         $end = min($total_pages, $page + 2);
-        
+
         for ($i = $start; $i <= $end; $i++): ?>
             <?php if ($i == $page): ?>
                 <span class="current"><?php echo $i; ?></span>
@@ -480,7 +499,7 @@ include 'includes/header.php';
                 <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $i])); ?>"><?php echo $i; ?></a>
             <?php endif; ?>
         <?php endfor; ?>
-        
+
         <?php if ($page < $total_pages): ?>
             <a href="?<?php echo http_build_query(array_merge($_GET, ['page' => $page + 1])); ?>">Nākamā &raquo;</a>
         <?php endif; ?>
@@ -516,7 +535,7 @@ include 'includes/header.php';
             <form id="statusChangeForm" method="POST">
                 <input type="hidden" name="action" value="change_status">
                 <input type="hidden" name="task_id" id="statusTaskId">
-                
+
                 <div class="form-group">
                     <label for="new_status" class="form-label">Jauns statuss</label>
                     <select id="new_status" name="new_status" class="form-control" required>
@@ -527,7 +546,7 @@ include 'includes/header.php';
                         <option value="Atlikts">Atlikts</option>
                     </select>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="komentars" class="form-label">Komentārs (neobligāts)</label>
                     <textarea id="komentars" name="komentars" class="form-control" rows="3" placeholder="Pievienot komentāru par statusa maiņu..."></textarea>
@@ -550,12 +569,12 @@ let isFormSubmitting = false;
 document.addEventListener('DOMContentLoaded', function() {
     const form = document.getElementById('filterForm');
     const searchInput = document.getElementById('meklēt');
-    
+
     if (!form || !searchInput) {
         console.error('Form vai meklēšanas lauks nav atrasts');
         return;
     }
-    
+
     // Event listeners filtru select elementiem
     document.querySelectorAll('#filterForm select').forEach(element => {
         element.addEventListener('change', function() {
@@ -565,20 +584,20 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
-    
+
     // Meklēšanas lauka debounce
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
         const searchValue = this.value.trim();
         const indicator = document.getElementById('searchIndicator');
-        
+
         // Rādīt meklēšanas indikatoru
         if (searchValue.length > 0) {
             indicator.style.display = 'block';
         } else {
             indicator.style.display = 'none';
         }
-        
+
         searchTimeout = setTimeout(() => {
             if (!isFormSubmitting) {
                 isFormSubmitting = true;
@@ -586,7 +605,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }, 800); // Palielināts laiks, lai lietotājs var pabeigt rakstīšanu
     });
-    
+
     // Enter taustiņa nospiešana meklēšanas laukā
     searchInput.addEventListener('keypress', function(e) {
         if (e.key === 'Enter') {
@@ -598,7 +617,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
     });
-    
+
     // Filtru poga
     const filterButton = form.querySelector('button[type="submit"]');
     if (filterButton) {
@@ -611,7 +630,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
-    
+
     // Atiestatīt formas stāvokli pēc lapas ielādes
     setTimeout(() => {
         isFormSubmitting = false;
@@ -645,20 +664,20 @@ function deleteTask(taskId) {
     const form = document.createElement('form');
     form.method = 'POST';
     form.style.display = 'none';
-    
+
     const actionInput = document.createElement('input');
     actionInput.type = 'hidden';
     actionInput.name = 'action';
     actionInput.value = 'delete_task';
-    
+
     const taskInput = document.createElement('input');
     taskInput.type = 'hidden';
     taskInput.name = 'task_id';
     taskInput.value = taskId;
-    
+
     form.appendChild(actionInput);
     form.appendChild(taskInput);
-    
+
     document.body.appendChild(form);
     form.submit();
 }
@@ -668,7 +687,7 @@ function sortBy(column, direction) {
     const url = new URL(window.location);
     url.searchParams.set('sort', column);
     url.searchParams.set('order', direction);
-    
+
     // Saglabāt esošos filtrus
     const form = document.getElementById('filterForm');
     if (form) {
@@ -737,6 +756,23 @@ function clearFilters() {
 .form-control:focus {
     border-color: var(--primary-color);
     box-shadow: 0 0 0 0.2rem rgba(var(--primary-color-rgb, 0, 123, 255), 0.25);
+}
+
+/* Mazāks fonts mehāniķu vārdiem un lielāks platums */
+.table td:nth-child(2) {
+    font-size: 0.85em;
+    color: #666;
+    min-width: 180px;
+    max-width: 220px;
+    word-wrap: break-word;
+}
+
+/* Grupas darba ikona */
+.group-work-icon {
+    color: var(--primary-color);
+    margin-right: 5px;
+    font-weight: bold;
+    font-size: 1.1em;
 }
 </style>
 

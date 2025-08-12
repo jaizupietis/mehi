@@ -11,6 +11,109 @@ $currentUser = getCurrentUser();
 $errors = [];
 $success = false;
 
+/**
+ * Apstrādā uzdevuma pabeigšanu, ja tam ir piešķirti vairāki mehāniķi.
+ *
+ * @param int $taskId Uzdevuma ID.
+ * @param int $mechanicId Pašreizējā mehāniķa ID.
+ * @return bool Vai atjaunināšana bija veiksmīga.
+ */
+function completeMultiMechanicTask(int $taskId, int $mechanicId): bool
+{
+    global $pdo; // Piekļuve globālajam PDO savienojumam
+
+    try {
+        $pdo->beginTransaction();
+
+        // Pabeigt darba laika uzskaiti šim mehāniķim
+        $stmt = $pdo->prepare("
+            UPDATE darba_laiks 
+            SET beigu_laiks = NOW(), 
+                stundu_skaits = TIMESTAMPDIFF(MINUTE, sakuma_laiks, NOW()) / 60.0
+            WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
+        ");
+        $stmt->execute([$taskId, $mechanicId]);
+
+        // Atjaunot piešķīruma statusu uz 'Pabeigts' šim mehāniķim
+        $stmt = $pdo->prepare("
+            UPDATE uzdevumu_piešķīrumi 
+            SET statuss = 'Pabeigts', pabeigts = NOW() 
+            WHERE uzdevuma_id = ? AND mehāniķa_id = ?
+        ");
+        $stmt->execute([$taskId, $mechanicId]);
+
+        // Pārbaudīt, vai visi mehāniķi ir pabeiguši uzdevumu
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) 
+            FROM uzdevumu_piešķīrumi 
+            WHERE uzdevuma_id = ? AND statuss != 'Pabeigts' AND statuss != 'Noņemts'
+        ");
+        $stmt->execute([$taskId]);
+        $activeAssignments = $stmt->fetchColumn();
+
+        if ($activeAssignments == 0) {
+            // Visi uzdevumi ir pabeigti, atjaunot galveno uzdevumu
+            $stmt = $pdo->prepare("
+                UPDATE uzdevumi 
+                SET statuss = 'Pabeigts', 
+                    beigu_laiks = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$taskId]);
+
+            // Pievienot vēsturi par uzdevuma galveno pabeigšanu
+            $stmt = $pdo->prepare("
+                INSERT INTO uzdevumu_vesture 
+                (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
+                VALUES (?, 'Procesā', 'Pabeigts', 'Visi mehāniķi pabeiguši uzdevumu', ?)
+            ");
+            $stmt->execute([$taskId, $mechanicId]); // Šeit varētu būt nepieciešams ID, kurš ir galvenais
+        }
+
+        // Paziņot menedžerim/administratoram par darba pabeigšanu
+        $taskStmt = $pdo->prepare("SELECT u.nosaukums, u.veids FROM uzdevumi u WHERE u.id = ?");
+        $taskStmt->execute([$taskId]);
+        $task = $taskStmt->fetch();
+        $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
+
+        // Iegūt mehāniķa vārdu
+        $mechanicStmt = $pdo->prepare("SELECT CONCAT(vards, ' ', uzvards) as pilns_vards FROM lietotaji WHERE id = ?");
+        $mechanicStmt->execute([$mechanicId]);
+        $mechanicName = $mechanicStmt->fetchColumn();
+
+        $managerStmt = $pdo->prepare("
+            SELECT l.id 
+            FROM lietotaji l 
+            WHERE l.loma IN ('Administrators', 'Menedžeris') AND l.statuss = 'Aktīvs'
+        ");
+        $managerStmt->execute();
+        $managers = $managerStmt->fetchAll();
+
+        foreach ($managers as $manager) {
+            createNotification(
+                $manager['id'],
+                "$uzdevuma_tips pabeigts",
+                "Mehāniķis $mechanicName ir pabeidzis savu daļu uzdevumā: {$task['nosaukums']}",
+                'Statusa maiņa',
+                'Uzdevums',
+                $taskId
+            );
+        }
+
+        $pdo->commit();
+        return true;
+
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        error_log("Kļūda completeMultiMechanicTask: " . $e->getMessage());
+        return false;
+    }
+}
+
+
+// Function removed - using the one in config.php instead to avoid redeclaration
+
+
 // Apstrādāt POST darbības
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -21,30 +124,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo->beginTransaction();
 
-            // Pārbaudīt vai uzdevums pieder lietotājam
-            $stmt = $pdo->prepare("SELECT statuss, prioritate, problemas_id FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
-            $stmt->execute([$task_id, $currentUser['id']]);
+            // Pārbaudīt vai uzdevums pieder lietotājam un nav sākts
+            $stmt = $pdo->prepare("
+                SELECT u.*, 
+                       (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
+                FROM uzdevumi u 
+                WHERE u.id = ? AND (u.piešķirts_id = ? OR EXISTS (
+                    SELECT 1 FROM uzdevumu_piešķīrumi up 
+                    WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+                ))
+            ");
+            $stmt->execute([$currentUser['id'], $task_id, $currentUser['id'], $currentUser['id']]);
             $task = $stmt->fetch();
 
-            if ($task && $task['statuss'] === 'Jauns') {
-                // Mainīt statusu uz "Procesā"
-                $stmt = $pdo->prepare("UPDATE uzdevumi SET statuss = 'Procesā', sakuma_laiks = NOW() WHERE id = ?");
-                $stmt->execute([$task_id]);
-
-                // Ja tas ir kritisks uzdevums ar problēmu, atjaunot problēmas statusu
-                if ($task && $task['prioritate'] === 'Kritiska' && $task['problemas_id']) {
-                    // Atjaunot problēmas statusu uz "Pārvērsta uzdevumā"
+            if (!$task) {
+                $errors[] = 'Uzdevums nav atrasts vai jums nav tiesību to sākt.';
+            } elseif ($task['aktīvs_darbs'] > 0) {
+                $errors[] = 'Jūs jau strādājat pie šī uzdevuma!';
+            } elseif (!in_array($task['statuss'], ['Jauns', 'Procesā'])) {
+                $errors[] = 'Var sākt tikai jaunus vai procesā esošus uzdevumus.';
+            } else {
+                // Ja uzdevums ir vairākiem mehāniķiem, atjaunināt piešķīrumu statusu
+                if ($task['daudziem_mehāniķiem']) {
                     $stmt = $pdo->prepare("
-                        UPDATE problemas 
-                        SET statuss = 'Pārvērsta uzdevumā', 
-                            apstradasija_id = ?,
-                            atjaunots = NOW()
-                        WHERE id = ?
+                        UPDATE uzdevumu_piešķīrumi 
+                        SET statuss = 'Sākts', sākts = NOW() 
+                        WHERE uzdevuma_id = ? AND mehāniķa_id = ?
                     ");
-                    $stmt->execute([$currentUser['id'], $task['problemas_id']]);
+                    $stmt->execute([$task_id, $currentUser['id']]);
+                }
 
-                    // Noņemt uzdevumu citiem mehāniķiem
-                    removeCriticalTaskFromOtherMechanics($task_id, $currentUser['id']);
+                // Ja uzdevums ir jauns, mainīt uz "Procesā"
+                if ($task['statuss'] === 'Jauns') {
+                    $stmt = $pdo->prepare("UPDATE uzdevumi SET statuss = 'Procesā', sakuma_laiks = NOW() WHERE id = ?");
+                    $stmt->execute([$task_id]);
+
+                    // Pievienot vēsturi
+                    $stmt = $pdo->prepare("
+                        INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
+                        VALUES (?, 'Jauns', 'Procesā', 'Darbs sākts', ?)
+                    ");
+                    $stmt->execute([$task_id, $currentUser['id']]);
                 }
 
                 // Sākt darba laika uzskaiti
@@ -54,23 +174,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ");
                 $stmt->execute([$currentUser['id'], $task_id]);
 
-                // Pievienot vēsturi
-                $stmt = $pdo->prepare("
-                    INSERT INTO uzdevumu_vesture (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
-                    VALUES (?, 'Jauns', 'Procesā', 'Darbs sākts', ?)
-                ");
-                $stmt->execute([$task_id, $currentUser['id']]);
+                // Ja šis ir kritisks uzdevums, noņemt citiem mehāniķiem
+                if ($task['prioritate'] === 'Kritiska' && $task['problemas_id']) {
+                    removeCriticalTaskFromOtherMechanics($task_id, $currentUser['id']);
+                }
 
-                $pdo->commit();
-                setFlashMessage('success', 'Darbs sākts!');
-            } elseif ($task && $task['statuss'] === 'Procesā' && $task['piešķirts_id'] == $currentUser['id']) {
-                 $errors[] = 'Jūs jau strādājat pie šī uzdevuma.';
-            } elseif ($task && $task['statuss'] === 'Nodalīts') {
-                 $errors[] = 'Šis uzdevums ir pagaidām nav pieejams (novākts no citiem).';
+                $success = 'Uzdevuma darbs sākts!';
             }
-            else {
-                $errors[] = 'Nevar sākt darbu pie šī uzdevuma (nepareizs statuss vai nav piešķirts Jums).';
-            }
+
+            $pdo->commit();
 
         } catch (PDOException $e) {
             $pdo->rollBack();
@@ -118,89 +230,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'complete_task' && isset($_POST['task_id'])) {
         $task_id = intval($_POST['task_id']);
-        $komentars = sanitizeInput($_POST['komentars'] ?? '');
-        $faktiskais_ilgums = floatval($_POST['faktiskais_ilgums'] ?? 0);
 
         try {
-            $pdo->beginTransaction();
-
-            // Pārbaudīt vai uzdevums pieder lietotājam un iegūt uzdevuma veidu
-            $stmt = $pdo->prepare("SELECT statuss, veids FROM uzdevumi WHERE id = ? AND piešķirts_id = ?");
-            $stmt->execute([$task_id, $currentUser['id']]);
+            // Iegūt uzdevuma informāciju
+            $stmt = $pdo->prepare("
+                SELECT u.*, 
+                       (SELECT COUNT(*) FROM darba_laiks WHERE uzdevuma_id = u.id AND lietotaja_id = ? AND beigu_laiks IS NULL) as aktīvs_darbs
+                FROM uzdevumi u 
+                WHERE u.id = ? AND (u.piešķirts_id = ? OR EXISTS (
+                    SELECT 1 FROM uzdevumu_piešķīrumi up 
+                    WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+                ))
+            ");
+            $stmt->execute([$currentUser['id'], $task_id, $currentUser['id'], $currentUser['id']]);
             $task = $stmt->fetch();
 
-            if ($task && in_array($task['statuss'], ['Jauns', 'Procesā'])) {
-                // Pabeigt darba laika uzskaiti
-                $stmt = $pdo->prepare("
-                    UPDATE darba_laiks 
-                    SET beigu_laiks = NOW(), 
-                        stundu_skaits = TIMESTAMPDIFF(MINUTE, sakuma_laiks, NOW()) / 60.0
-                    WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
-                ");
-                $stmt->execute([$task_id, $currentUser['id']]);
-
-                // Aprēķināt kopējo darba laiku
-                $stmt = $pdo->prepare("
-                    SELECT SUM(stundu_skaits) as kopejais_laiks 
-                    FROM darba_laiks 
-                    WHERE uzdevuma_id = ? AND lietotaja_id = ?
-                ");
-                $stmt->execute([$task_id, $currentUser['id']]);
-                $total_time = $stmt->fetchColumn() ?: 0;
-
-                // Atjaunot uzdevuma statusu
-                $stmt = $pdo->prepare("
-                    UPDATE uzdevumi 
-                    SET statuss = 'Pabeigts', 
-                        beigu_laiks = NOW(), 
-                        atbildes_komentars = ?,
-                        faktiskais_ilgums = ?
-                    WHERE id = ?
-                ");
-                $stmt->execute([
-                    $komentars, 
-                    $faktiskais_ilgums ?: $total_time, 
-                    $task_id
-                ]);
-
-                // Pievienot vēsturi
-                $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
-                $stmt = $pdo->prepare("
-                    INSERT INTO uzdevumu_vesture 
-                    (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
-                    VALUES (?, ?, 'Pabeigts', ?, ?)
-                ");
-                $stmt->execute([
-                    $task_id, 
-                    $task['statuss'], 
-                    "$uzdevuma_tips pabeigts" . ($komentars ? ': ' . $komentars : ''), 
-                    $currentUser['id']
-                ]);
-
-                // Paziņot menedžerim/administratoram
-                $stmt = $pdo->prepare("
-                    SELECT u.nosaukums, l.id, l.loma 
-                    FROM uzdevumi u, lietotaji l 
-                    WHERE u.id = ? AND l.loma IN ('Administrators', 'Menedžeris') AND l.statuss = 'Aktīvs'
-                ");
-                $stmt->execute([$task_id]);
-                $managers = $stmt->fetchAll();
-
-                foreach ($managers as $manager) {
-                    createNotification(
-                        $manager['id'],
-                        "$uzdevuma_tips pabeigts",
-                        "Mehāniķis {$currentUser['vards']} {$currentUser['uzvards']} ir pabeidzis uzdevumu: {$manager['nosaukums']}",
-                        'Statusa maiņa',
-                        'Uzdevums',
-                        $task_id
-                    );
-                }
-
-                $pdo->commit();
-                setFlashMessage('success', "$uzdevuma_tips pabeigts!");
+            if (!$task) {
+                $errors[] = 'Uzdevums nav atrasts vai jums nav tiesību to pabeigt.';
+            } elseif (!in_array($task['statuss'], ['Jauns', 'Procesā'])) {
+                $errors[] = 'Var pabeigt tikai jaunus vai procesā esošus uzdevumus.';
             } else {
-                $errors[] = 'Nevar pabeigt šo uzdevumu.';
+                // Izmantot vairāku mehāniķu pabeigšanas funkciju
+                if ($task['daudziem_mehāniķiem']) {
+                    // Pārbaudīt vai mehāniķis ir sācis darbu pie šī uzdevuma
+                    $stmt = $pdo->prepare("
+                        SELECT statuss FROM uzdevumu_piešķīrumi 
+                        WHERE uzdevuma_id = ? AND mehāniķa_id = ? AND statuss != 'Noņemts'
+                    ");
+                    $stmt->execute([$task_id, $currentUser['id']]);
+                    $assignment_status = $stmt->fetchColumn();
+
+                    if (!$assignment_status) {
+                        $errors[] = 'Jums nav piešķīruma šim uzdevumam.';
+                    } elseif ($assignment_status === 'Pabeigts') {
+                        $errors[] = 'Jūs jau esat pabeidzis savu uzdevuma daļu.';
+                    } else {
+                        if (completeMultiMechanicTask($task_id, $currentUser['id'])) {
+                            $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
+                            $success = "Jūsu uzdevuma daļa veiksmīgi pabeigta!";
+                        } else {
+                            $errors[] = 'Kļūda pabeidzot vairāku mehāniķu uzdevumu.';
+                        }
+                    }
+                } else {
+                    // Parastā loģika vienam mehāniķim
+                    $pdo->beginTransaction();
+
+                    // Pabeigt darba laika uzskaiti
+                    $stmt = $pdo->prepare("
+                        UPDATE darba_laiks 
+                        SET beigu_laiks = NOW(), 
+                            stundu_skaits = TIMESTAMPDIFF(MINUTE, sakuma_laiks, NOW()) / 60.0
+                        WHERE uzdevuma_id = ? AND lietotaja_id = ? AND beigu_laiks IS NULL
+                    ");
+                    $stmt->execute([$task_id, $currentUser['id']]);
+
+                    // Aprēķināt kopējo darba laiku
+                    $stmt = $pdo->prepare("
+                        SELECT SUM(stundu_skaits) as kopejais_laiks 
+                        FROM darba_laiks 
+                        WHERE uzdevuma_id = ? AND lietotaja_id = ?
+                    ");
+                    $stmt->execute([$task_id, $currentUser['id']]);
+                    $total_time = $stmt->fetchColumn() ?: 0;
+
+                    // Atjaunot uzdevuma statusu
+                    $stmt = $pdo->prepare("
+                        UPDATE uzdevumi 
+                        SET statuss = 'Pabeigts', 
+                            beigu_laiks = NOW(),
+                            faktiskais_ilgums = ?
+                        WHERE id = ?
+                    ");
+                    $stmt->execute([$total_time, $task_id]);
+
+                    // Pievienot vēsturi
+                    $uzdevuma_tips = $task['veids'] === 'Regulārais' ? 'Regulārais uzdevums' : 'Uzdevums';
+                    $stmt = $pdo->prepare("
+                        INSERT INTO uzdevumu_vesture 
+                        (uzdevuma_id, iepriekšējais_statuss, jaunais_statuss, komentars, mainīja_id)
+                        VALUES (?, ?, 'Pabeigts', ?, ?)
+                    ");
+                    $stmt->execute([
+                        $task_id, 
+                        $task['statuss'], 
+                        "$uzdevuma_tips pabeigts", 
+                        $currentUser['id']
+                    ]);
+
+                    $pdo->commit();
+                    $success = "$uzdevuma_tips veiksmīgi pabeigts!";
+                }
             }
 
         } catch (PDOException $e) {
@@ -215,7 +335,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 try {
-    // Ielādēt visus aktīvos uzdevumus (kārtoti pēc prioritātes un izveidošanas datuma)
+    // Pārbaudīt vai rādīt tikai šodienas uzdevumus
+    $show_today_only = isset($_GET['today']) && $_GET['today'] == '1';
+    $date_filter = $show_today_only ? "AND DATE(u.izveidots) = CURDATE()" : "";
+
+    // Ielādēt uzdevumus (visus vai tikai šodienas)
     $sql = "
         SELECT u.*, 
                v.nosaukums as vietas_nosaukums,
@@ -229,25 +353,43 @@ try {
                    WHEN u.statuss IN ('Jauns', 'Procesā') AND DATEDIFF(NOW(), u.izveidots) > 3 THEN 1
                    ELSE 0 
                END as ir_nokavets,
-               (SELECT COUNT(*) FROM uzdevumi WHERE prioritate = 'Kritiska' AND statuss != 'Pabeigts') as kopējās_kritiskās_problēmas
+               (SELECT COUNT(*) FROM uzdevumi WHERE prioritate = 'Kritiska' AND statuss != 'Pabeigts') as kopējās_kritiskās_problēmas,
+               u.daudziem_mehāniķiem,
+               (SELECT COUNT(*) FROM uzdevumu_piešķīrumi WHERE uzdevuma_id = u.id) as piešķīrumu_skaits,
+               (SELECT COUNT(*) FROM uzdevumu_piešķīrumi WHERE uzdevuma_id = u.id AND statuss IN ('Sākts', 'Pabeigts')) as aktīvo_piešķīrumu_skaits,
+               (SELECT GROUP_CONCAT(CONCAT(l.vards, ' ', l.uzvards) SEPARATOR ', ') 
+                FROM uzdevumu_piešķīrumi up 
+                JOIN lietotaji l ON up.mehāniķa_id = l.id 
+                WHERE up.uzdevuma_id = u.id AND up.statuss != 'Noņemts') as visi_piešķirtie,
+               CASE 
+                   WHEN u.prioritate = 'Kritiska' AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1
+                   ELSE 0
+               END as ir_kritisks_aktīvs,
+               CASE 
+                   WHEN u.daudziem_mehāniķiem = 1 THEN (
+                       SELECT up.statuss FROM uzdevumu_piešķīrumi up 
+                       WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+                   )
+                   ELSE u.statuss
+               END as mans_statuss,
+               (SELECT up.statuss FROM uzdevumu_piešķīrumi up 
+                WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts') as mans_piešķīruma_statuss
         FROM uzdevumi u
         LEFT JOIN vietas v ON u.vietas_id = v.id
         LEFT JOIN iekartas i ON u.iekartas_id = i.id
         LEFT JOIN uzdevumu_kategorijas k ON u.kategorijas_id = k.id
         LEFT JOIN regularo_uzdevumu_sabloni r ON u.regulara_uzdevuma_id = r.id
-        WHERE u.piešķirts_id = ? AND u.statuss != 'Nodalīts'
+        WHERE (u.piešķirts_id = ? OR (u.daudziem_mehāniķiem = 1 AND EXISTS(
+            SELECT 1 FROM uzdevumu_piešķīrumi WHERE uzdevuma_id = u.id AND mehāniķa_id = ? AND statuss != 'Noņemts'
+        ))) AND u.statuss != 'Nodalīts' $date_filter
         ORDER BY 
-            CASE u.prioritate 
-                WHEN 'Kritiska' THEN 1 
-                WHEN 'Augsta' THEN 2 
-                WHEN 'Vidēja' THEN 3 
-                WHEN 'Zema' THEN 4 
-            END ASC,
+            ir_kritisks_aktīvs DESC,
+            ir_nokavets DESC,
             u.izveidots DESC
     ";
 
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([$currentUser['id'], $currentUser['id']]);
+    $stmt->execute([$currentUser['id'], $currentUser['id'], $currentUser['id'], $currentUser['id'], $currentUser['id']]);
     $uzdevumi = $stmt->fetchAll();
 
     // Iegūt kopējo kritisko problēmu skaitu visiem operatoriem
@@ -256,7 +398,7 @@ try {
     $kopējās_kritiskās_problēmas = $stmt->fetchColumn();
 
 
-    // Statistika pa veidiem
+    // Statistika pa veidiem - tikai šodienas uzdevumi
     $stmt = $pdo->prepare("
         SELECT 
             u.veids,
@@ -265,10 +407,13 @@ try {
             SUM(CASE WHEN u.statuss IN ('Jauns', 'Procesā') THEN 1 ELSE 0 END) as aktīvi,
             SUM(CASE WHEN u.jabeidz_lidz IS NOT NULL AND u.jabeidz_lidz < NOW() AND u.statuss NOT IN ('Pabeigts', 'Atcelts') THEN 1 ELSE 0 END) as nokavēti
         FROM uzdevumi u
-        WHERE u.piešķirts_id = ? AND u.statuss != 'Nodalīts'
+        WHERE (u.piešķirts_id = ? OR EXISTS (
+            SELECT 1 FROM uzdevumu_piešķīrumi up 
+            WHERE up.uzdevuma_id = u.id AND up.mehāniķa_id = ? AND up.statuss != 'Noņemts'
+        )) AND u.statuss != 'Nodalīts' AND DATE(u.izveidots) = CURDATE()
         GROUP BY u.veids
     ");
-    $stmt->execute([$currentUser['id']]);
+    $stmt->execute([$currentUser['id'], $currentUser['id']]);
     $statistika_pa_veidiem = [];
     while ($row = $stmt->fetch()) {
         $statistika_pa_veidiem[$row['veids']] = $row;
@@ -290,16 +435,16 @@ include 'includes/header.php';
     <?php endforeach; ?>
 <?php endif; ?>
 
-<!-- Statistikas kartes pa uzdevumu veidiem -->
+<!-- Statistikas kartes pa uzdevumu veidiem - šodienas uzdevumi -->
 <div class="stats-grid mb-4">
     <div class="stat-card">
         <div class="stat-number"><?php echo ($statistika_pa_veidiem['Ikdienas']['kopā'] ?? 0); ?></div>
-        <div class="stat-label">Ikdienas uzdevumi</div>
+        <div class="stat-label">Šodienas ikdienas uzdevumi</div>
     </div>
 
     <div class="stat-card" style="border-left-color: var(--info-color);">
         <div class="stat-number" style="color: var(--info-color);"><?php echo ($statistika_pa_veidiem['Regulārais']['kopā'] ?? 0); ?></div>
-        <div class="stat-label">Regulārie uzdevumi</div>
+        <div class="stat-label">Šodienas regulārie uzdevumi</div>
     </div>
 
     <div class="stat-card" style="border-left-color: var(--warning-color);">
@@ -309,7 +454,7 @@ include 'includes/header.php';
             echo $total_active;
             ?>
         </div>
-        <div class="stat-label">Aktīvie uzdevumi</div>
+        <div class="stat-label">Šodienas aktīvie</div>
     </div>
 
     <div class="stat-card" style="border-left-color: var(--success-color);">
@@ -319,7 +464,7 @@ include 'includes/header.php';
             echo $total_completed;
             ?>
         </div>
-        <div class="stat-label">Pabeigti uzdevumi</div>
+        <div class="stat-label">Šodienas pabeigti</div>
     </div>
 
     <div class="stat-card" style="border-left-color: var(--danger-color);">
@@ -329,17 +474,25 @@ include 'includes/header.php';
             echo $total_overdue;
             ?>
         </div>
-        <div class="stat-label">Nokavētie uzdevumi</div>
+        <div class="stat-label">Šodienas nokavētie</div>
     </div>
 
-    
 </div>
 
-<!-- Navigācijas saites -->
+<!-- Navigācijas saites un filtri -->
 <div class="card mb-3">
     <div class="card-body">
-        <div class="d-flex flex-wrap gap-2">
-            <a href="my_tasks.php" class="btn btn-primary">Visi uzdevumi</a>
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <?php 
+            $show_today_only = isset($_GET['today']) && $_GET['today'] == '1';
+            ?>
+            <?php if ($show_today_only): ?>
+                <a href="my_tasks.php" class="btn btn-primary">Visi mani uzdevumi</a>
+                <span class="btn btn-outline-primary disabled">Šodienas uzdevumi</span>
+            <?php else: ?>
+                <span class="btn btn-primary disabled">Visi mani uzdevumi</span>
+                <a href="my_tasks.php?today=1" class="btn btn-outline-primary">Šodienas uzdevumi</a>
+            <?php endif; ?>
             <a href="completed_tasks.php" class="btn btn-outline-success">Pabeigto uzdevumu vēsture</a>
         </div>
     </div>
@@ -375,6 +528,9 @@ include 'includes/header.php';
                             <?php if ($uzdevums['failu_skaits'] > 0): ?>
                                 <span class="file-badge" title="Pievienoti faili">📎 <?php echo $uzdevums['failu_skaits']; ?></span>
                             <?php endif; ?>
+                            <?php if ($uzdevums['daudziem_mehāniķiem']): ?>
+                                <span class="multi-mechanic-badge" title="Piešķirts vairākiem mehāniķiem">👥 <?php echo $uzdevums['piešķīrumu_skaits']; ?></span>
+                            <?php endif; ?>
                             <?php if ($uzdevums['aktīvs_darbs'] > 0): ?>
                                 <span class="working-badge" title="Darbs procesā">⏰ Darbs procesā</span>
                             <?php endif; ?>
@@ -409,6 +565,26 @@ include 'includes/header.php';
                         <?php if ($uzdevums['paredzamais_ilgums']): ?>
                             <div><strong>Paredzamais ilgums:</strong> <?php echo $uzdevums['paredzamais_ilgums']; ?> h</div>
                         <?php endif; ?>
+                        <?php if ($uzdevums['daudziem_mehāniķiem']): ?>
+                            <div><strong>Piešķirts:</strong> <?php echo htmlspecialchars($uzdevums['visi_piešķirtie']); ?></div>
+                            <div><strong>Aktīvi strādā:</strong> <?php echo $uzdevums['aktīvo_piešķīrumu_skaits']; ?> no <?php echo $uzdevums['piešķīrumu_skaits']; ?></div>
+                            <?php
+                            // Parādīt pašreizējā mehāniķa statusu
+                            $stmt = $pdo->prepare("
+                                SELECT statuss FROM uzdevumu_piešķīrumi 
+                                WHERE uzdevuma_id = ? AND mehāniķa_id = ? AND statuss != 'Noņemts'
+                            ");
+                            $stmt->execute([$uzdevums['id'], $currentUser['id']]);
+                            $my_assignment_status = $stmt->fetchColumn();
+                            ?>
+                            <?php if ($my_assignment_status): ?>
+                                <div><strong>Mans statuss:</strong> 
+                                    <span class="badge <?php echo $my_assignment_status === 'Pabeigts' ? 'badge-success' : ($my_assignment_status === 'Sākts' ? 'badge-warning' : 'badge-secondary'); ?>">
+                                        <?php echo $my_assignment_status; ?>
+                                    </span>
+                                </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
                     </div>
 
                     <div class="task-description">
@@ -423,12 +599,40 @@ include 'includes/header.php';
                         <?php if ($uzdevums['statuss'] === 'Jauns'): ?>
                             <button onclick="startWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-success">Sākt darbu</button>
                         <?php elseif ($uzdevums['statuss'] === 'Procesā'): ?>
-                            <?php if ($uzdevums['aktīvs_darbs'] > 0): ?>
-                                <button onclick="pauseWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-warning">Pauzēt</button>
+                            <?php
+                            // Pārbaudīt vai mehāniķis var pabeigt uzdevumu
+                            $can_complete = true;
+                            $my_assignment_status = null;
+                            if ($uzdevums['daudziem_mehāniķiem']) {
+                                // Pārbaudīt vai mehāniķis ir sācis darbu
+                                $stmt = $pdo->prepare("
+                                    SELECT statuss FROM uzdevumu_piešķīrumi 
+                                    WHERE uzdevuma_id = ? AND mehāniķa_id = ? AND statuss != 'Noņemts'
+                                ");
+                                $stmt->execute([$uzdevums['id'], $currentUser['id']]);
+                                $my_assignment_status = $stmt->fetchColumn();
+
+                                if (!$my_assignment_status || $my_assignment_status === 'Pabeigts') {
+                                    $can_complete = false;
+                                }
+                            }
+                            ?>
+
+                            <?php if ($can_complete && (!$uzdevums['daudziem_mehāniķiem'] || $my_assignment_status !== 'Pabeigts')): ?>
+                                <?php if ($uzdevums['aktīvs_darbs'] > 0): ?>
+                                    <button onclick="pauseWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-warning">Pauzēt</button>
+                                <?php else: ?>
+                                    <button onclick="resumeWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-warning">Turpināt</button>
+                                <?php endif; ?>
+
+                                <button onclick="completeTask(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-success">
+                                    <?php echo $uzdevums['daudziem_mehāniķiem'] ? 'Pabeigt savu daļu' : 'Pabeigt'; ?>
+                                </button>
                             <?php else: ?>
-                                <button onclick="resumeWork(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-warning">Turpināt</button>
+                                <?php if ($uzdevums['daudziem_mehāniķiem'] && $my_assignment_status === 'Pabeigts'): ?>
+                                    <span class="btn btn-sm btn-secondary disabled" title="Jūs jau esat pabeidzis savu daļu">✓ Pabeigts</span>
+                                <?php endif; ?>
                             <?php endif; ?>
-                            <button onclick="completeTask(<?php echo $uzdevums['id']; ?>)" class="btn btn-sm btn-success">Pabeigt</button>
                         <?php endif; ?>
                     </div>
 
@@ -757,6 +961,15 @@ function closeModal(modalId) {
     border-radius: 3px;
     font-size: 11px;
     animation: pulse 1.5s infinite;
+}
+
+.multi-mechanic-badge {
+    background: var(--primary-color);
+    color: var(--white);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: bold;
 }
 
 .stats-grid {

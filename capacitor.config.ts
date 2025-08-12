@@ -4,9 +4,9 @@ import { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'lv.avoti.tms',
   appName: 'AVOTI TMS',
-  webDir: '.',
+  webDir: 'www',
   server: {
-    url: 'http://192.168.2.11/mehi', // Jūsu lokālais LAMP serveris
+    url: 'http://192.168.2.11/mehi',
     cleartext: true,
     androidScheme: 'http'
   },

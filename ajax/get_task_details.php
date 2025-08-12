@@ -22,7 +22,15 @@ try {
                v.nosaukums as vietas_nosaukums,
                i.nosaukums as iekartas_nosaukums,
                k.nosaukums as kategorijas_nosaukums,
-               CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards,
+               CASE 
+                   WHEN u.piešķirts_id IS NOT NULL THEN CONCAT(l.vards, ' ', l.uzvards)
+                   ELSE (
+                       SELECT GROUP_CONCAT(CONCAT(lm.vards, ' ', lm.uzvards) SEPARATOR ', ')
+                       FROM uzdevumu_piešķīrumi up
+                       JOIN lietotaji lm ON up.mehāniķa_id = lm.id
+                       WHERE up.uzdevuma_id = u.id AND up.statuss != 'Noņemts'
+                   )
+               END as mehaniķa_vards,
                CONCAT(e.vards, ' ', e.uzvards) as izveidoja_vards,
                p.nosaukums as problemas_nosaukums
         FROM uzdevumi u
@@ -42,9 +50,28 @@ try {
         exit('Task not found');
     }
     
-    // Pārbaudīt atļaujas
-    if (!hasRole([ROLE_ADMIN, ROLE_MANAGER]) && 
-        !($task['piešķirts_id'] == $currentUser['id'] && hasRole(ROLE_MECHANIC))) {
+    // Pārbaudīt atļaujas - vai ir administrators/menedžeris vai piešķirts mehāniķis
+    $hasAccess = hasRole([ROLE_ADMIN, ROLE_MANAGER]);
+    
+    // Ja ir mehāniķis, pārbaudīt vai uzdevums ir piešķirts viņam
+    if (!$hasAccess && hasRole(ROLE_MECHANIC)) {
+        if ($task['piešķirts_id'] == $currentUser['id']) {
+            $hasAccess = true;
+        } else {
+            // Pārbaudīt vai ir piešķirts caur daudziem mehāniķiem
+            $stmt = $pdo->prepare("
+                SELECT COUNT(*) 
+                FROM uzdevumu_piešķīrumi 
+                WHERE uzdevuma_id = ? AND mehāniķa_id = ? AND statuss != 'Noņemts'
+            ");
+            $stmt->execute([$task_id, $currentUser['id']]);
+            if ($stmt->fetchColumn() > 0) {
+                $hasAccess = true;
+            }
+        }
+    }
+    
+    if (!$hasAccess) {
         http_response_code(403);
         exit('Access denied');
     }
@@ -128,12 +155,46 @@ try {
                 
                 <div class="row mt-2">
                     <div class="col-md-6">
-                        <strong>Piešķirts:</strong> <?php echo htmlspecialchars($task['mehaniķa_vards']); ?>
+                        <strong>Piešķirts:</strong> <?php echo htmlspecialchars($task['mehaniķa_vards'] ?? 'Nav piešķirts'); ?>
+                        <?php if ($task['daudziem_mehāniķiem']): ?>
+                            <br><small class="text-info">👥 Grupas darbs</small>
+                        <?php endif; ?>
                     </div>
                     <div class="col-md-6">
                         <strong>Izveidoja:</strong> <?php echo htmlspecialchars($task['izveidoja_vards']); ?>
                     </div>
-                </div>
+                </div></div>
+                
+                <?php if ($task['daudziem_mehāniķiem']): ?>
+                    <?php
+                    // Iegūt detalizēto informāciju par piešķīrumiem
+                    $stmt = $pdo->prepare("
+                        SELECT up.*, CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards, up.statuss as piešķīruma_statuss
+                        FROM uzdevumu_piešķīrumi up
+                        JOIN lietotaji l ON up.mehāniķa_id = l.id
+                        WHERE up.uzdevuma_id = ? AND up.statuss != 'Noņemts'
+                        ORDER BY l.vards, l.uzvards
+                    ");
+                    $stmt->execute([$task_id]);
+                    $assignments = $stmt->fetchAll();
+                    ?>
+                    
+                    <?php if (!empty($assignments)): ?>
+                        <div class="row mt-2">
+                            <div class="col-md-12">
+                                <strong>Iesaistītie mehāniķi:</strong>
+                                <div class="mt-1">
+                                    <?php foreach ($assignments as $assignment): ?>
+                                        <span class="badge <?php echo $assignment['piešķīruma_statuss'] === 'Pabeigts' ? 'badge-success' : ($assignment['piešķīruma_statuss'] === 'Sākts' ? 'badge-warning' : 'badge-secondary'); ?>" style="margin-right: 5px; margin-bottom: 2px;">
+                                            <?php echo htmlspecialchars($assignment['mehaniķa_vards']); ?>
+                                            <small>(<?php echo $assignment['piešķīruma_statuss']; ?>)</small>
+                                        </span>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
             </div>
             
             <div class="task-description mb-3">
@@ -314,8 +375,34 @@ try {
     min-width: 300px;
 }
 
+.task-details .col-md-12 {
+    width: 100%;
+}
+
 .file-item {
     background: var(--white);
+}
+
+.badge {
+    display: inline-block;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    color: white;
+    font-weight: normal;
+}
+
+.badge-success {
+    background-color: #28a745;
+}
+
+.badge-warning {
+    background-color: #ffc107;
+    color: #212529;
+}
+
+.badge-secondary {
+    background-color: #6c757d;
 }
 
 @media (max-width: 768px) {
@@ -325,7 +412,8 @@ try {
     
     .task-details .col-md-4,
     .task-details .col-md-6,
-    .task-details .col-md-8 {
+    .task-details .col-md-8,
+    .task-details .col-md-12 {
         width: 100%;
         flex: none;
     }
