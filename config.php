@@ -79,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 define('DB_HOST', 'localhost');
 define('DB_NAME', 'mehu_uzd');
 define('DB_USER', 'tasks');
-define('DB_PASS', 'Astalavista1920');
+define('DB_PASS', '');
 define('DB_CHARSET', 'utf8mb4');
 
 // Sistēmas konfigurācija
