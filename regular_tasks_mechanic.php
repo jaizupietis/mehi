@@ -154,24 +154,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $currentUser['id']
                 ]);
                 
+                // Iegūt uzdevuma nosaukumu paziņojumiem
+                $stmt = $pdo->prepare("SELECT nosaukums FROM uzdevumi WHERE id = ?");
+                $stmt->execute([$task_id]);
+                $taskName = $stmt->fetchColumn();
+                
                 // Paziņot menedžerim/administratoram
                 $stmt = $pdo->prepare("
-                    SELECT u.nosaukums, l.id, l.loma 
-                    FROM uzdevumi u, lietotaji l 
-                    WHERE u.id = ? AND l.loma IN ('Administrators', 'Menedžeris') AND l.statuss = 'Aktīvs'
+                    SELECT id, loma, CONCAT(vards, ' ', uzvards) as pilns_vards 
+                    FROM lietotaji 
+                    WHERE loma IN ('Administrators', 'Menedžeris') AND statuss = 'Aktīvs'
                 ");
-                $stmt->execute([$task_id]);
+                $stmt->execute();
                 $managers = $stmt->fetchAll();
                 
                 foreach ($managers as $manager) {
-                    createNotification(
+                    $notification_result = createNotification(
                         $manager['id'],
                         'Regulārais uzdevums pabeigts',
-                        "Mehāniķis {$currentUser['vards']} {$currentUser['uzvards']} ir pabeidzis regulāro uzdevumu: {$manager['nosaukums']}",
+                        "Mehāniķis {$currentUser['vards']} {$currentUser['uzvards']} ir pabeidzis regulāro uzdevumu: {$taskName}",
                         'Statusa maiņa',
                         'Uzdevums',
                         $task_id
                     );
+                    
+                    error_log("Paziņojums menedžerim {$manager['pilns_vards']} ({$manager['id']}) par regulāro uzdevumu $task_id izveidots: " . ($notification_result ? 'jā' : 'nē'));
+                    
+                    // Telegram paziņojums
+                    sendTaskTelegramNotification($manager['id'], $taskName, $task_id, 'task_completed');
                 }
                 
                 $pdo->commit();

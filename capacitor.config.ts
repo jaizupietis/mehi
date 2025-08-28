@@ -1,4 +1,3 @@
-
 import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
@@ -6,14 +5,24 @@ const config: CapacitorConfig = {
   appName: 'AVOTI TMS',
   webDir: 'www',
   server: {
-    url: 'http://192.168.2.11/mehi',
+    url: 'http://192.168.2.11/mehi/',
     cleartext: true,
     androidScheme: 'http'
   },
   android: {
     allowMixedContent: true,
     captureInput: true,
-    webContentsDebuggingEnabled: true
+    webContentsDebuggingEnabled: true,
+    allowNavigation: ['*'],
+    overrideUserAgent: 'CapacitorWebView AVOTI TMS Android App',
+    appendUserAgent: 'AVOTI TMS',
+    backgroundColor: '#2c3e50',
+    persistSession: true,
+    handleRequestsInCapacitor: true
+  },
+  electron: {
+    webSecurity: false,
+    allowRunningInsecureContent: true
   },
   plugins: {
     SplashScreen: {

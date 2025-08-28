@@ -5,11 +5,11 @@
   "description": "Uzdevumu pārvaldības sistēma SIA AVOTI",
   "start_url": "/mehi/",
   "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
   "background_color": "#2c3e50",
   "theme_color": "#2c3e50",
   "orientation": "portrait-primary",
   "scope": "/mehi/",
-  "display_override": ["window-controls-overlay"],
   "protocol_handlers": [
     {
       "protocol": "web+avotitms",

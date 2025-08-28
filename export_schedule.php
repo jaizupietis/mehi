@@ -1,4 +1,3 @@
-
 <?php
 require_once 'config.php';
 
@@ -14,7 +13,7 @@ $end_date = date('Y-m-d', strtotime($start_date . ' +6 days'));
 try {
     // Nodrošināt UTF-8 kodējumu datubāzei
     $pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_latvian_ci");
-    
+
     // Iegūt mehāniķus
     $stmt = $pdo->query("
         SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards 
@@ -23,7 +22,7 @@ try {
         ORDER BY vards, uzvards
     ");
     $mechanics = $stmt->fetchAll();
-    
+
     // Iegūt grafiku
     $stmt = $pdo->prepare("
         SELECT g.*, CONCAT(l.vards, ' ', l.uzvards) as mehaniķis
@@ -34,29 +33,26 @@ try {
     ");
     $stmt->execute([$start_date, $end_date]);
     $schedule_data = $stmt->fetchAll();
-    
+
     // Organizēt datus
     $schedule = [];
     foreach ($schedule_data as $entry) {
         $schedule[$entry['datums']][$entry['lietotaja_id']][] = $entry['maina'];
     }
-    
+
     if ($type === 'csv') {
         // Nodrošināt UTF-8 kodējumu
         mb_internal_encoding('UTF-8');
-        
+
         // CSV eksports
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="darba_grafiks_' . str_replace('-', '_', $start_date) . '.csv"');
-        
+
         $output = fopen('php://output', 'w');
-        
-        // Pievienot UTF-8 BOM, lai Excel pareizi attēlotu latviešu burtus
-        fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
-        
+
         // UTF-8 BOM priekš Excel
-        fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
-        
+        fwrite($output, "\xEF\xBB\xBF");
+
         // Galvene
         $header = ['Mehāniķis'];
         for ($i = 0; $i < 7; $i++) {
@@ -65,16 +61,21 @@ try {
             $header[] = $day_name . ' (' . date('d.m.Y', strtotime($current_date)) . ')';
         }
         fputcsv($output, $header, ';');
-        
+
         // Dati
         foreach ($mechanics as $mechanic) {
             // Nodrošināt UTF-8 kodējumu vārdam
-            $row = [mb_convert_encoding($mechanic['pilns_vards'], 'UTF-8', 'UTF-8')];
-            
+            $name = $mechanic['pilns_vards'];
+            // Pārbaudīt vai nepieciešama kodējuma konvertācija
+            if (!mb_check_encoding($name, 'UTF-8')) {
+                $name = mb_convert_encoding($name, 'UTF-8', 'auto');
+            }
+            $row = [$name];
+
             for ($i = 0; $i < 7; $i++) {
                 $current_date = date('Y-m-d', strtotime($start_date . " +$i days"));
                 $shifts = $schedule[$current_date][$mechanic['id']] ?? [];
-                
+
                 // Formatēt maiņas bez HTML tagiem
                 if (empty($shifts)) {
                     $row[] = '-';
@@ -96,17 +97,21 @@ try {
                                 $shift_names[] = $shift;
                         }
                     }
-                    $row[] = mb_convert_encoding(implode(', ', $shift_names), 'UTF-8', 'UTF-8');
+                    $shift_text = implode(', ', $shift_names);
+                    if (!mb_check_encoding($shift_text, 'UTF-8')) {
+                        $shift_text = mb_convert_encoding($shift_text, 'UTF-8', 'auto');
+                    }
+                    $row[] = $shift_text;
                 }
             }
-            
+
             fputcsv($output, $row, ';');
         }
-        
+
         fclose($output);
         exit;
     }
-    
+
 } catch (PDOException $e) {
     http_response_code(500);
     echo "Kļūda: " . $e->getMessage();
