@@ -1,27 +1,52 @@
 <?php
+// Debug informācija Android aplikācijām
+$user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+$is_android = (strpos($user_agent, 'CapacitorWebView') !== false || 
+              strpos($user_agent, 'AVOTI TMS') !== false ||
+              strpos($user_agent, 'Android') !== false);
+
+if ($is_android) {
+    error_log("Header check - Android detected. Session ID: " . session_id());
+    error_log("Header check - Session data exists: " . (isset($_SESSION['lietotaja_id']) ? 'YES' : 'NO'));
+    if (isset($_SESSION['lietotaja_id'])) {
+        error_log("Header check - User ID in session: " . $_SESSION['lietotaja_id']);
+    }
+}
+
 if (!isLoggedIn()) {
+    if ($is_android) {
+        error_log("Header check - User not logged in, redirecting to login.php");
+    }
     redirect('login.php');
 }
 
 $currentUser = getCurrentUser();
+
+if ($is_android && !$currentUser) {
+    error_log("Header check - getCurrentUser() returned null for Android user");
+}
+
 $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
 ?>
 <!DOCTYPE html>
 <html lang="lv">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?php echo isset($pageTitle) ? getPageTitle($pageTitle) : getPageTitle(); ?></title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title><?php echo $pageTitle ? $pageTitle . ' - AVOTI TMS' : 'AVOTI TMS'; ?></title>
 
-	 <!-- PWA Meta tags -->
-    <meta name="theme-color" content="#2c3e50">
+    <!-- PWA Meta Tags -->
+    <meta name="application-name" content="AVOTI TMS">
+    <meta name="apple-mobile-web-app-title" content="AVOTI TMS">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="AVOTI TMS">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="application-name" content="AVOTI TMS">
-    <meta name="msapplication-TileColor" content="#2c3e50">
-    <meta name="msapplication-TileImage" content="assets/images/icon-144x144.png">
+    <meta name="theme-color" content="#2c3e50">
+    <meta name="msapplication-navbutton-color" content="#2c3e50">
+    <meta name="msapplication-starturl" content="/mehi/">
+
+    <!-- Prevent zoom on input focus -->
+    <meta name="format-detection" content="telephone=no">
 
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
@@ -56,7 +81,7 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
                 navigator.serviceWorker.register('/mehi/assets/js/sw.js')
                     .then(function(registration) {
                         console.log('ServiceWorker registration successful');
-                        
+
                         // Pēc veiksmīgas reģistrācijas, iestatīt push notifications
                         setupPushNotifications(registration);
                     })
@@ -80,7 +105,7 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
                         console.log('Already subscribed to push notifications');
                         return;
                     }
-                    
+
                     // Pieprasīt paziņojumu atļaujas
                     return Notification.requestPermission()
                         .then(function(permission) {
@@ -107,7 +132,7 @@ $unreadNotifications = getUnreadNotificationCount($currentUser['id']);
             })
             .then(function(subscription) {
                 console.log('Push subscription successful:', subscription);
-                
+
                 // Nosūtīt subscription uz serveri
                 return sendSubscriptionToServer(subscription);
             })
@@ -188,7 +213,7 @@ function updateNotificationBadge(count) {
     const notificationLink = document.querySelector('a[href="notifications.php"]');
     const badge = document.querySelector('.notification-badge .badge');
     const notificationBadgeContainer = document.querySelector('.notification-badge');
-    
+
     if (notificationLink) {
         // Atjaunot tekstu navigācijas linkā
         const linkText = notificationLink.textContent.replace(/\(\d+\)/, '');
@@ -198,7 +223,7 @@ function updateNotificationBadge(count) {
             notificationLink.textContent = linkText.trim();
         }
     }
-    
+
     if (badge) {
         if (count > 0) {
             badge.textContent = count > 99 ? '99+' : count;
@@ -232,6 +257,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="container">
             <div class="header-content">
                 <a href="index.php" class="logo">
+					<div class="header-logo">
+						<img src="assets/images/logo_bez_bg.png" alt="AVOTI Logo" style="width: 100%; height: 100%; object-fit: contain;">
+					</div>
                     AVOTI TMS
                 </a>
 
@@ -282,10 +310,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     <li><a href="completed_tasks.php" <?php echo basename($_SERVER['PHP_SELF']) == 'completed_tasks.php' ? 'class="active"' : ''; ?>>Pabeigto uzdevumu vēsture</a></li>
                 <?php endif; ?>
 
+                <?php if (hasRole([ROLE_ADMIN, ROLE_MANAGER])): ?>
+                    <li><a href="reports.php" <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'class="active"' : ''; ?>>Atskaites</a></li>
+                <?php endif; ?>
+
                 <?php if (hasRole(ROLE_ADMIN)): ?>
                     <li><a href="users.php" <?php echo basename($_SERVER['PHP_SELF']) == 'users.php' ? 'class="active"' : ''; ?>>Lietotāji</a></li>
                     <li><a href="settings.php" <?php echo basename($_SERVER['PHP_SELF']) == 'settings.php' ? 'class="active"' : ''; ?>>Iestatījumi</a></li>
-                    <li><a href="reports.php" <?php echo basename($_SERVER['PHP_SELF']) == 'reports.php' ? 'class="active"' : ''; ?>>Atskaites</a></li>
                 <?php endif; ?>
 
                 <li><a href="notifications.php" <?php echo basename($_SERVER['PHP_SELF']) == 'notifications.php' ? 'class="active"' : ''; ?>>

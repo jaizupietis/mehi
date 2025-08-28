@@ -71,7 +71,29 @@ class TelegramNotificationManager {
                 return ['success' => false, 'error' => 'Nav Telegram chat ID'];
             }
             
-            $message = $this->formatTaskMessage($taskTitle, $taskId, $type);
+            // Iegūt mehāniķa vārdu un prioritāti no uzdevuma
+            $mechanicName = null;
+            $priority = null;
+            try {
+                $stmt = $this->pdo->prepare("
+                    SELECT CONCAT(l.vards, ' ', l.uzvards) as mehaniķa_vards, u.prioritate
+                    FROM uzdevumi u
+                    LEFT JOIN lietotaji l ON u.piešķirts_id = l.id
+                    WHERE u.id = ?
+                ");
+                $stmt->execute([$taskId]);
+                $result = $stmt->fetch();
+                if ($result) {
+                    if ($result['mehaniķa_vards']) {
+                        $mechanicName = $result['mehaniķa_vards'];
+                    }
+                    $priority = $result['prioritate'];
+                }
+            } catch (Exception $e) {
+                error_log("Error getting mechanic name and priority for task $taskId: " . $e->getMessage());
+            }
+            
+            $message = $this->formatTaskMessage($taskTitle, $taskId, $type, $mechanicName, $priority);
             $sent = 0;
             $errors = [];
             
@@ -106,7 +128,29 @@ class TelegramNotificationManager {
                 return ['success' => false, 'error' => 'Nav Telegram chat ID'];
             }
             
-            $message = $this->formatProblemMessage($problemTitle, $problemId);
+            // Iegūt operatora vārdu un prioritāti no problēmas
+            $operatorName = null;
+            $priority = null;
+            try {
+                $stmt = $this->pdo->prepare("
+                    SELECT CONCAT(l.vards, ' ', l.uzvards) as operatora_vards, p.prioritate
+                    FROM problemas p
+                    LEFT JOIN lietotaji l ON p.zinotajs_id = l.id
+                    WHERE p.id = ?
+                ");
+                $stmt->execute([$problemId]);
+                $result = $stmt->fetch();
+                if ($result) {
+                    if ($result['operatora_vards']) {
+                        $operatorName = $result['operatora_vards'];
+                    }
+                    $priority = $result['prioritate'];
+                }
+            } catch (Exception $e) {
+                error_log("Error getting operator name and priority for problem $problemId: " . $e->getMessage());
+            }
+            
+            $message = $this->formatProblemMessage($problemTitle, $problemId, $operatorName, $priority);
             $sent = 0;
             $errors = [];
             
@@ -133,23 +177,69 @@ class TelegramNotificationManager {
         }
     }
     
-    private function formatTaskMessage($taskTitle, $taskId, $type) {
+    private function formatTaskMessage($taskTitle, $taskId, $type, $mechanicName = null, $priority = null) {
         $emoji = $this->getTaskEmoji($type);
         $typeText = $this->getTaskTypeText($type);
         
-        $message = "{$emoji} <b>{$typeText}</b>\n\n";
-        $message .= "📋 <b>Uzdevums:</b> " . htmlspecialchars($taskTitle) . "\n";
-        $message .= "🆔 <b>ID:</b> #{$taskId}\n";
+        // Dekodēt HTML entities un sagatavot tekstu
+        $cleanTitle = html_entity_decode($taskTitle, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // Papildu dekodēšana īpašiem gadījumiem
+        $cleanTitle = str_replace(['&#039;', '&quot;', '&amp;', '&lt;', '&gt;'], ["'", '"', '&', '<', '>'], $cleanTitle);
+        
+        // Īpaša formatēšana kritiskajiem uzdevumiem
+        if ($priority === 'Kritiska') {
+            $message = "🚨🔴 <b>KRITISKS UZDEVUMS!</b> 🔴🚨\n\n";
+            $message .= "{$emoji} <b>{$typeText}</b>\n\n";
+        } else {
+            $message = "{$emoji} <b>{$typeText}</b>\n\n";
+        }
+        
+        $message .= "📋 <b>Uzdevums:</b> " . htmlspecialchars($cleanTitle) . "\n";
+        
+        // Pievienot prioritāti ar emoji
+        if ($priority) {
+            $priorityEmoji = $this->getPriorityEmoji($priority);
+            $message .= "{$priorityEmoji} <b>Prioritāte:</b> {$priority}\n";
+        }
+        
+        // Pievienot mehāniķa vārdu, ja pieejams
+        if ($mechanicName) {
+            $message .= "👤 <b>Mehāniķis:</b> {$mechanicName}\n";
+        }
+        
         $message .= "🕐 <b>Laiks:</b> " . date('d.m.Y H:i') . "\n\n";
-        $message .= "🔗 <a href='" . SITE_URL . "/my_tasks.php?task_id={$taskId}'>Skatīt uzdevumu</a>";
+        $message .= "🔗 <a href='" . SITE_URL . "/view_task.php?task_id={$taskId}'>Skatīt uzdevumu</a>";
         
         return $message;
     }
     
-    private function formatProblemMessage($problemTitle, $problemId) {
-        $message = "🚨 <b>Jauna problēma ziņota</b>\n\n";
-        $message .= "⚠️ <b>Problēma:</b> " . htmlspecialchars($problemTitle) . "\n";
-        $message .= "🆔 <b>ID:</b> #{$problemId}\n";
+    private function formatProblemMessage($problemTitle, $problemId, $operatorName = null, $priority = null) {
+        // Dekodēt HTML entities un sagatavot tekstu
+        $cleanTitle = html_entity_decode($problemTitle, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // Papildu dekodēšana īpašiem gadījumiem
+        $cleanTitle = str_replace(['&#039;', '&quot;', '&amp;', '&lt;', '&gt;'], ["'", '"', '&', '<', '>'], $cleanTitle);
+        
+        // Īpaša formatēšana kritiskajām problēmām
+        if ($priority === 'Kritiska') {
+            $message = "🚨🔴 <b>KRITISKA PROBLĒMA!</b> 🔴🚨\n\n";
+            $message .= "⚠️ <b>Jauna problēma ziņota</b>\n\n";
+        } else {
+            $message = "🚨 <b>Jauna problēma ziņota</b>\n\n";
+        }
+        
+        $message .= "⚠️ <b>Problēma:</b> " . htmlspecialchars($cleanTitle) . "\n";
+        
+        // Pievienot prioritāti ar emoji
+        if ($priority) {
+            $priorityEmoji = $this->getPriorityEmoji($priority);
+            $message .= "{$priorityEmoji} <b>Prioritāte:</b> {$priority}\n";
+        }
+        
+        // Pievienot operatora vārdu, ja pieejams
+        if ($operatorName) {
+            $message .= "👤 <b>Operators:</b> {$operatorName}\n";
+        }
+        
         $message .= "🕐 <b>Laiks:</b> " . date('d.m.Y H:i') . "\n\n";
         $message .= "🔗 <a href='" . SITE_URL . "/problems.php?problem_id={$problemId}'>Skatīt problēmu</a>";
         
@@ -182,6 +272,21 @@ class TelegramNotificationManager {
         }
     }
     
+    private function getPriorityEmoji($priority) {
+        switch (strtolower($priority)) {
+            case 'kritiska':
+                return '🔴⚡';
+            case 'augsta':
+                return '🟠';
+            case 'vidēja':
+                return '🟡';
+            case 'zema':
+                return '🟢';
+            default:
+                return '⚪';
+        }
+    }
+    
     public function registerUser($lietotajaId, $chatId, $username = null, $firstName = null, $lastName = null) {
         try {
             $stmt = $this->pdo->prepare("
@@ -199,6 +304,27 @@ class TelegramNotificationManager {
             
         } catch (PDOException $e) {
             error_log("Error registering Telegram user: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    public function findUserByTelegramUsername($username) {
+        try {
+            // Noņemt @ simbolu, ja ir
+            $cleanUsername = ltrim($username, '@');
+            
+            $stmt = $this->pdo->prepare("
+                SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards, loma
+                FROM lietotaji 
+                WHERE telegram_username = ? AND statuss = 'Aktīvs'
+                LIMIT 1
+            ");
+            $stmt->execute([$cleanUsername]);
+            
+            return $stmt->fetch();
+            
+        } catch (PDOException $e) {
+            error_log("Error finding user by Telegram username: " . $e->getMessage());
             return false;
         }
     }

@@ -4,6 +4,65 @@ require_once 'config.php';
 // Pārbaudīt atļaujas
 requireRole(ROLE_OPERATOR);
 
+// Palīgfunkcija kritisko problēmu rezerves apstrādei
+function handleCriticalProblemFallback($problemas_id, $nosaukums, $pdo) {
+    // Ja neizdevās izveidot uzdevumus automātiski, paziņot mehāniķiem manuāli
+    error_log("CRITICAL PROBLEM FALLBACK: Notifying mechanics manually for problem ID: $problemas_id");
+
+    $stmt = $pdo->query("
+        SELECT id FROM lietotaji 
+        WHERE loma = 'Mehāniķis' 
+        AND statuss = 'Aktīvs'
+    ");
+    $mechanics = $stmt->fetchAll();
+
+    foreach ($mechanics as $mechanic) {
+        createNotification(
+            $mechanic['id'],
+            '🚨 KRITISKA PROBLĒMA!',
+            "Jauna kritiska problēma: $nosaukums. Ražošana var būt apturēta! TŪLĪTĒJA RĪCĪBA NEPIECIEŠAMA!",
+            'Kritiska problēma',
+            'Problēma',
+            $problemas_id
+        );
+
+        // Nosūtīt Telegram paziņojumu mehāniķiem
+        try {
+            sendProblemTelegramNotification($mechanic['id'], "🚨 KRITISKA PROBLĒMA: $nosaukums", $problemas_id);
+        } catch (Exception $e) {
+            error_log("Failed to send Telegram notification to mechanic {$mechanic['id']}: " . $e->getMessage());
+        }
+    }
+
+    // Paziņot menedžeriem par neizdevušos automātisko izveidi
+    $stmt = $pdo->query("
+        SELECT id FROM lietotaji 
+        WHERE loma IN ('Menedžeris', 'Administrators') 
+        AND statuss = 'Aktīvs'
+    ");
+    $managers = $stmt->fetchAll();
+
+    foreach ($managers as $manager) {
+        createNotification(
+            $manager['id'],
+            '⚠️ KRITISKA PROBLĒMA - AUTOMĀTISKA IZVEIDE NEIZDEVĀS!',
+            "Operators ziņoja kritisku problēmu: $nosaukums. UZMANĪBU: Automātiska uzdevumu izveide neizdevās! Nepieciešama manuāla iejaukšanās.",
+            'Kritiska problēma',
+            'Problēma',
+            $problemas_id
+        );
+
+        // Nosūtīt Telegram paziņojumu menedžeriem
+        try {
+            sendProblemTelegramNotification($manager['id'], "🚨 KRITISKA PROBLĒMA (Automātiska izveide neizdevās): $nosaukums", $problemas_id);
+        } catch (Exception $e) {
+            error_log("Failed to send Telegram notification to manager {$manager['id']}: " . $e->getMessage());
+        }
+    }
+
+    setFlashMessage('warning', 'Kritiska problēma ziņota, bet automātiska uzdevumu izveide neizdevās! Mehāniķi un menedžeri ir paziņoti.');
+}
+
 $pageTitle = 'Ziņot problēmu';
 $pageHeader = 'Jauna problēma';
 
@@ -150,82 +209,187 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Ja problēma ir kritiska, automātiski pārvērst uzdevumā un piešķirt mehāniķiem
             if ($prioritate === 'Kritiska') {
-                // Sagatavot problēmas datus uzdevuma izveidošanai
-                $problemData = [
-                    'nosaukums' => $nosaukums,
-                    'apraksts' => $apraksts,
-                    'vietas_id' => $vietas_id,
-                    'iekartas_id' => $iekartas_id,
-                    'aptuvenais_ilgums' => $aptuvenais_ilgums
-                ];
+                error_log("CRITICAL PROBLEM DETECTED: Starting automatic task creation for problem ID: $problemas_id");
 
-                // Izveidot kritiskos uzdevumus visiem strādājošajiem mehāniķiem
-                $createdTasks = createCriticalTaskFromProblem($problemas_id, $problemData);
+                try {
+                    // Iegūt visus aktīvos mehāniķus (strādājošos šodien)
+                    $today = date('Y-m-d');
+                    $current_hour = intval(date('H'));
 
-                if ($createdTasks && is_array($createdTasks)) {
-                    // Paziņot menedžeriem un administratoriem par automātiski izveidotajiem uzdevumiem
-                    $stmt = $pdo->query("
-                        SELECT id FROM lietotaji 
-                        WHERE loma IN ('Menedžeris', 'Administrators') 
-                        AND statuss = 'Aktīvs'
-                    ");
-                    $managers = $stmt->fetchAll();
-
-                    foreach ($managers as $manager) {
-                        createNotification(
-                            $manager['id'],
-                            'KRITISKA PROBLĒMA AUTOMĀTISKI PĀRVĒRSTA',
-                            "Kritiska problēma '$nosaukums' automātiski pārvērsta uzdevumā un piešķirta " . count($createdTasks) . " mehāniķiem. Ražošana ir apturēta!",
-                            'Kritiska problēma',
-                            'Problēma',
-                            $problemas_id
-                        );
-                    }
-                } else {
-                    // Ja neizdevās izveidot uzdevumus, paziņot kā iepriekš
-                    $stmt = $pdo->query("
-                        SELECT id FROM lietotaji 
-                        WHERE loma = 'Mehāniķis' 
-                        AND statuss = 'Aktīvs'
-                    ");
-                    $mechanics = $stmt->fetchAll();
-
-                    foreach ($mechanics as $mechanic) {
-                        createNotification(
-                            $mechanic['id'],
-                            'KRITISKA PROBLĒMA!',
-                            "Jauna kritiska problēma: $nosaukums. Ražošana var būt apturēta!",
-                            'Kritiska problēma',
-                            'Problēma',
-                            $problemas_id
-                        );
+                    // Noteikt pašreizējo maiņu
+                    $current_shift = null;
+                    if ($current_hour >= 7 && $current_hour < 16) {
+                        $current_shift = 'R'; // Rīta maiņa 07:00-16:00
+                    } elseif ($current_hour >= 16 || $current_hour < 1) {
+                        $current_shift = 'V'; // Vakara maiņa 16:00-01:00
                     }
 
-                    // Paziņot menedžeriem
-                    $stmt = $pdo->query("
-                        SELECT id FROM lietotaji 
-                        WHERE loma IN ('Menedžeris', 'Administrators') 
-                        AND statuss = 'Aktīvs'
-                    ");
-                    $managers = $stmt->fetchAll();
+                    error_log("CRITICAL: Current shift: " . ($current_shift ?? 'none') . ", hour: $current_hour");
 
-                    foreach ($managers as $manager) {
-                        createNotification(
-                            $manager['id'],
-                            'KRITISKA PROBLĒMA ZIŅOTA!',
-                            "Operators ziņoja kritisku problēmu: $nosaukums. UZMANĪBU: Automātiska uzdevumu izveide neizdevās!",
-                            'Kritiska problēma',
-                            'Problēma',
-                            $problemas_id
-                        );
+                    // Meklēt mehāniķus ar atbilstošo darba grafiku
+                    $stmt = $pdo->prepare("
+                        SELECT l.id, CONCAT(l.vards, ' ', l.uzvards) as pilns_vards, l.vards, l.uzvards,
+                               CASE 
+                                   WHEN dg.maina IS NOT NULL THEN dg.maina
+                                   ELSE 'Nav_grafika'
+                               END as maina_status
+                        FROM lietotaji l
+                        LEFT JOIN darba_grafiks dg ON l.id = dg.lietotaja_id AND dg.datums = ?
+                        WHERE l.loma = 'Mehāniķis' 
+                        AND l.statuss = 'Aktīvs'
+                        AND (
+                            (dg.maina = ? AND dg.maina != 'B') OR  -- Strādā pašreizējā maiņā (nav brīvdiena)
+                            (dg.maina IS NULL)                      -- Nav grafika (pieņemam ka strādā)
+                        )
+                        AND COALESCE(dg.maina, 'Nav_grafika') != 'B'  -- Papildu pārbaude - izslēgt brīvdienas
+                        ORDER BY l.vards, l.uzvards
+                    ");
+                    $stmt->execute([$today, $current_shift]);
+                    $available_mechanics = $stmt->fetchAll();
+
+                    // Ja nav atrasti mehāniķi pašreizējā maiņā, iegūt visus aktīvos mehāniķus
+                    if (empty($available_mechanics)) {
+                        error_log("CRITICAL: No mechanics found for current shift ($current_shift), getting all active mechanics");
+                        $stmt = $pdo->query("
+                            SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards, vards, uzvards, 'Nav_grafika' as maina_status
+                            FROM lietotaji 
+                            WHERE loma = 'Mehāniķis' 
+                            AND statuss = 'Aktīvs'
+                            ORDER BY vards, uzvards
+                        ");
+                        $available_mechanics = $stmt->fetchAll();
                     }
+
+                    if (empty($available_mechanics)) {
+                        error_log("CRITICAL: No active mechanics found at all!");
+                        handleCriticalProblemFallback($problemas_id, $nosaukums, $pdo);
+                    } else {
+                        error_log("CRITICAL: Found " . count($available_mechanics) . " available mechanics");
+
+                        $createdTasks = [];
+
+                        foreach ($available_mechanics as $mechanic) {
+                            // Izveidot uzdevumu katram pieejamajam mehāniķim
+                            $stmt = $pdo->prepare("
+                                INSERT INTO uzdevumi 
+                                (nosaukums, apraksts, prioritate, statuss, piešķirts_id, problemas_id, 
+                                 vietas_id, iekartas_id, paredzamais_ilgums, izveidoja_id, jabeidz_lidz, daudziem_mehāniķiem)
+                                VALUES (?, ?, 'Kritiska', 'Jauns', ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR), 0)
+                            ");
+
+                            $success = $stmt->execute([
+                                "🚨 KRITISKS: " . $nosaukums,
+                                "⚠️ KRITISKA PROBLĒMA - TŪLĪTĒJA RĪCĪBA NEPIECIEŠAMA! ⚠️\n\n" . 
+                                $apraksts . 
+                                "\n\n🔴 ŠIS IR KRITISKS UZDEVUMS - RAŽOŠANA VAR BŪT APTURĒTA!\n" .
+                                "🔴 PIRMAIS MEHĀNIĶIS, KURŠ PABEIGS UZDEVUMU, AUTOMĀTISKI NOŅEMS TO CITIEM!\n" .
+                                "🔴 JA ESAT SĀCIS DARBU, JUMS BŪTU JĀPABEIDZ!",
+                                $mechanic['id'],
+                                $problemas_id,
+                                $vietas_id ?: null,
+                                $iekartas_id ?: null,
+                                $aptuvenais_ilgums ?: 1,
+                                $currentUser['id']
+                            ]);
+
+                            if ($success) {
+                                $taskId = $pdo->lastInsertId();
+
+                                $createdTasks[] = [
+                                    'task_id' => $taskId,
+                                    'mechanic_id' => $mechanic['id'],
+                                    'mechanic_name' => $mechanic['pilns_vards'],
+                                    'shift_status' => $mechanic['maina_status']
+                                ];
+
+                                // Izveidot paziņojumu mehāniķim
+                                createNotification(
+                                    $mechanic['id'],
+                                    '🚨 KRITISKS UZDEVUMS!',
+                                    "Jums piešķirts kritisks uzdevums: " . $nosaukums . ". TŪLĪTĒJA RĪCĪBA NEPIECIEŠAMA! Pirmais kas pabeigs noņems uzdevumu citiem.",
+                                    'Jauns uzdevums',
+                                    'Uzdevums',
+                                    $taskId
+                                );
+
+                                // Nosūtīt Telegram paziņojumu
+                                try {
+                                    if (isset($GLOBALS['telegramManager'])) {
+                                        $result = $GLOBALS['telegramManager']->sendTaskNotification($mechanic['id'], "🚨 KRITISKS: " . $nosaukums, $taskId, 'new_task');
+                                        if ($result['success']) {
+                                            error_log("CRITICAL: Telegram notification sent successfully for task $taskId to mechanic {$mechanic['id']}");
+                                        } else {
+                                            error_log("CRITICAL: Failed to send Telegram notification for task $taskId: " . ($result['error'] ?? 'Unknown error'));
+                                        }
+                                    } else {
+                                        error_log("CRITICAL: Telegram Manager not available for task $taskId");
+                                    }
+                                } catch (Exception $e) {
+                                    error_log("CRITICAL: Telegram notification error for task $taskId: " . $e->getMessage());
+                                }
+
+                                error_log("CRITICAL: Created task ID: $taskId for mechanic: " . $mechanic['pilns_vards']);
+                            } else {
+                                error_log("CRITICAL: Failed to create task for mechanic: " . $mechanic['pilns_vards']);
+                            }
+                        }
+
+                        if (!empty($createdTasks)) {
+                            // Atjaunot problēmas statusu
+                            $stmt = $pdo->prepare("UPDATE problemas SET statuss = 'Pārvērsta uzdevumā' WHERE id = ?");
+                            $stmt->execute([$problemas_id]);
+
+                            // Paziņot menedžeriem un administratoriem par automātiski izveidotajiem uzdevumiem
+                            $stmt = $pdo->query("
+                                SELECT id FROM lietotaji 
+                                WHERE loma IN ('Menedžeris', 'Administrators') 
+                                AND statuss = 'Aktīvs'
+                            ");
+                            $managers = $stmt->fetchAll();
+
+                            foreach ($managers as $manager) {
+                                createNotification(
+                                    $manager['id'],
+                                    '🚨 KRITISKA PROBLĒMA AUTOMĀTISKI PĀRVĒRSTA',
+                                    "Kritiska problēma '$nosaukums' automātiski pārvērsta uzdevumā un piešķirta " . count($createdTasks) . " mehāniķiem. Ražošana ir apturēta!",
+                                    'Kritiska problēma',
+                                    'Problēma',
+                                    $problemas_id
+                                );
+
+                                // Telegram paziņojums tiks nosūtīts no parastās problēmas ziņošanas loģikas
+                                // (nav nepieciešams dublēt šeit)
+                            }
+
+                            error_log("CRITICAL: Successfully created " . count($createdTasks) . " critical tasks for problem ID: $problemas_id");
+                            setFlashMessage('success', "Kritiska problēma ziņota un automātiski pārvērsta uzdevumā! Piešķirta " . count($createdTasks) . " mehāniķiem.");
+                        } else {
+                            error_log("CRITICAL: No tasks were created!");
+                            handleCriticalProblemFallback($problemas_id, $nosaukums, $pdo);
+                        }
+                    }
+
+                } catch (Exception $e) {
+                    error_log("CRITICAL: Exception during task creation: " . $e->getMessage());
+                    handleCriticalProblemFallback($problemas_id, $nosaukums, $pdo);
                 }
             }
 
             // Push un Telegram paziņojumi pēc transakcijas pabeigšanas
             try {
                 sendProblemPushNotification($problemas_id, $nosaukums);
-                sendProblemTelegramNotification($problemas_id, $nosaukums);
+                
+                // Nosūtīt Telegram paziņojumus visiem menedžeriem un administratoriem
+                $stmt = $pdo->query("
+                    SELECT id FROM lietotaji 
+                    WHERE loma IN ('Administrators', 'Menedžeris') 
+                    AND statuss = 'Aktīvs'
+                ");
+                $telegramRecipients = $stmt->fetchAll();
+
+                foreach ($telegramRecipients as $recipient) {
+                    sendProblemTelegramNotification($recipient['id'], $nosaukums, $problemas_id);
+                }
             } catch (Exception $e) {
                 error_log("Push/Telegram notification error: " . $e->getMessage());
             }
@@ -291,12 +455,16 @@ include 'includes/header.php';
                 <div class="col-md-4">
                     <div class="form-group">
                         <label for="prioritate" class="form-label">Prioritāte *</label>
-                        <select id="prioritate" name="prioritate" class="form-control" required>
-                            <option value="Zema" <?php echo ($_POST['prioritate'] ?? 'Vidēja') === 'Zema' ? 'selected' : ''; ?>>Zema - var gaidīt</option>
-                            <option value="Vidēja" <?php echo ($_POST['prioritate'] ?? 'Vidēja') === 'Vidēja' ? 'selected' : ''; ?>>Vidēja - jārisina šodien</option>
-                            <option value="Augsta" <?php echo ($_POST['prioritate'] ?? '') === 'Augsta' ? 'selected' : ''; ?>>Augsta - jārisina steidzami</option>
-                            <option value="Kritiska" <?php echo ($_POST['prioritate'] ?? '') === 'Kritiska' ? 'selected' : ''; ?>>Kritiska - apturēta ražošana</option>
+                        <select id="prioritate" name="prioritate" class="form-control priority-selector" required>
+                            <option value="">Izvēlieties prioritāti</option>
+                            <option value="Zema" <?php echo ($_POST['prioritate'] ?? '') === 'Zema' ? 'selected' : ''; ?>>🟢 Zema</option>
+                            <option value="Vidēja" <?php echo ($_POST['prioritate'] ?? '') === 'Vidēja' ? 'selected' : ''; ?>>🟡 Vidēja</option>
+                            <option value="Augsta" <?php echo ($_POST['prioritate'] ?? '') === 'Augsta' ? 'selected' : ''; ?>>🟠 Augsta</option>
+                            <option value="Kritiska" <?php echo ($_POST['prioritate'] ?? '') === 'Kritiska' ? 'selected' : ''; ?>>🔴 KRITISKA ⚠️</option>
                         </select>
+                        <small class="form-text text-muted">
+                            <strong>Kritiska prioritāte:</strong> Automātiski pārveidos problēmu uzdevumā un piešķirs visiem mehāniķiem
+                        </small>
                     </div>
                 </div>
             </div>

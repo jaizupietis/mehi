@@ -1,4 +1,3 @@
-
 <?php
 require_once 'config.php';
 
@@ -26,7 +25,7 @@ try {
         $chatId = $message['chat']['id'];
         $text = $message['text'] ?? '';
         $from = $message['from'];
-        
+
         // Ja ziņojums sākas ar /start vai /register
         if (strpos($text, '/start') === 0 || strpos($text, '/register') === 0) {
             handleRegistration($chatId, $from, $text);
@@ -44,11 +43,11 @@ try {
             handleGeneralMessage($chatId, $text);
         }
     }
-    
+
     // Atgriezt 200 OK
     http_response_code(200);
     echo 'OK';
-    
+
 } catch (Exception $e) {
     error_log("Telegram webhook error: " . $e->getMessage());
     http_response_code(500);
@@ -57,23 +56,24 @@ try {
 
 function handleRegistration($chatId, $from, $text) {
     global $telegramManager, $pdo;
-    
+
     // Mēģināt atrast lietotāju pēc Telegram username
     $username = $from['username'] ?? null;
     $firstName = $from['first_name'] ?? '';
     $lastName = $from['last_name'] ?? '';
-    
+
     if ($username) {
         try {
-            // Meklēt lietotāju sistēmā pēc username (pieņemot, ka tas sakrīt ar sistēmas username)
+            // Meklēt lietotāju tikai pēc telegram_username kolonnas
             $stmt = $pdo->prepare("
-                SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards, loma 
+                SELECT id, CONCAT(vards, ' ', uzvards) as pilns_vards, loma
                 FROM lietotaji 
-                WHERE username = ? AND statuss = 'Aktīvs'
+                WHERE telegram_username = ? AND statuss = 'Aktīvs'
+                LIMIT 1
             ");
             $stmt->execute([$username]);
             $user = $stmt->fetch();
-            
+
             if ($user) {
                 // Reģistrēt lietotāju Telegram sistēmā
                 $result = $telegramManager->registerUser(
@@ -83,7 +83,7 @@ function handleRegistration($chatId, $from, $text) {
                     $firstName,
                     $lastName
                 );
-                
+
                 if ($result) {
                     $message = "✅ <b>Reģistrācija veiksmīga!</b>\n\n";
                     $message .= "👤 <b>Lietotājs:</b> {$user['pilns_vards']}\n";
@@ -94,10 +94,14 @@ function handleRegistration($chatId, $from, $text) {
                 }
             } else {
                 $message = "❌ <b>Lietotājs nav atrasts</b>\n\n";
-                $message .= "Jūsu Telegram username '@{$username}' nesakrīt ar nevienu aktīvu lietotāju sistēmā.\n\n";
-                $message .= "Lūdzu sazinieties ar administratoru vai pārbaudiet, vai jūsu username ir pareizi norādīts sistēmā.";
+                $message .= "Jūsu Telegram username '@{$username}' nav atrasts sistēmā.\n\n";
+                $message .= "📋 <b>Kas jādara:</b>\n";
+                $message .= "1. Administrators sistēmā iestatīja jūsu Telegram lietotājvārdu\n";
+                $message .= "2. Pārbaudiet, vai lietojat pareizo @{$username} Telegram profilā\n";
+                $message .= "3. Sazinieties ar administratoru palīdzībai\n\n";
+                $message .= "💡 Sistēma meklē lietotājus tikai pēc iestatītā Telegram lietotājvārda.";
             }
-            
+
         } catch (Exception $e) {
             error_log("Registration error: " . $e->getMessage());
             $message = "❌ Sistēmas kļūda. Lūdzu mēģiniet vēlāk.";
@@ -105,15 +109,15 @@ function handleRegistration($chatId, $from, $text) {
     } else {
         $message = "❌ <b>Nav Telegram username</b>\n\n";
         $message .= "Lai reģistrētos, jums ir nepieciešams Telegram username.\n\n";
-        $message .= "Lūdzu iestatiet username savā Telegram profilā un mēģiniet vēlreiz.";
+        $message .= "Lūdzu iestatiet username savā Telegram profilā un mēģiniet vēlāk.";
     }
-    
+
     $telegramManager->sendMessage($chatId, $message);
 }
 
 function handleStatusRequest($chatId) {
     global $telegramManager, $pdo;
-    
+
     try {
         // Meklēt lietotāju pēc chat ID
         $stmt = $pdo->prepare("
@@ -124,7 +128,7 @@ function handleStatusRequest($chatId) {
         ");
         $stmt->execute([$chatId]);
         $telegramUser = $stmt->fetch();
-        
+
         if ($telegramUser) {
             // Iegūt statistiku par uzdevumiem
             $stmt = $pdo->prepare("
@@ -138,60 +142,60 @@ function handleStatusRequest($chatId) {
             ");
             $stmt->execute([$telegramUser['lietotaja_id']]);
             $stats = $stmt->fetch();
-            
+
             $message = "📊 <b>Jūsu statuss sistēmā</b>\n\n";
             $message .= "👤 <b>Lietotājs:</b> {$telegramUser['vards']} {$telegramUser['uzvards']}\n";
             $message .= "🏷️ <b>Loma:</b> {$telegramUser['loma']}\n";
             $message .= "📅 <b>Reģistrēts:</b> " . date('d.m.Y H:i', strtotime($telegramUser['registered_at'])) . "\n\n";
-            
+
             $message .= "📋 <b>Uzdevumi (pēdējās 30 dienas):</b>\n";
             $message .= "• Kopējie: {$stats['kopejie']}\n";
             $message .= "• Jauni: {$stats['jauni']}\n";
             $message .= "• Procesā: {$stats['procesa']}\n";
             $message .= "• Pabeigti: {$stats['pabeigti']}\n\n";
-            
+
             $message .= "🔗 <a href='" . SITE_URL . "'>Atvērt sistēmu</a>";
         } else {
             $message = "❌ <b>Jūs neesat reģistrēts</b>\n\n";
             $message .= "Lūdzu nosūtiet /start lai reģistrētos sistēmā.";
         }
-        
+
     } catch (Exception $e) {
         error_log("Status request error: " . $e->getMessage());
         $message = "❌ Kļūda iegūstot statusu. Lūdzu mēģiniet vēlāk.";
     }
-    
+
     $telegramManager->sendMessage($chatId, $message);
 }
 
 function handleHelpRequest($chatId) {
     global $telegramManager;
-    
+
     $message = "🤖 <b>AVOTI Uzdevumu sistēmas bots</b>\n\n";
     $message .= "📝 <b>Pieejamās komandas:</b>\n";
     $message .= "/start - Reģistrēties sistēmā\n";
     $message .= "/status - Skatīt savu statusu\n";
     $message .= "/help - Šis palīdzības ziņojums\n\n";
-    
+
     $message .= "💡 <b>Ko dara šis bots:</b>\n";
     $message .= "• Paziņo par jauniem uzdevumiem\n";
     $message .= "• Informē par problēmām\n";
     $message .= "• Sūta atgādinājumus par termiņiem\n\n";
-    
+
     $message .= "🔗 <a href='" . SITE_URL . "'>Atvērt sistēmu</a>\n\n";
-    
+
     $message .= "❓ Ja rodas problēmas, sazinieties ar sistēmas administratoru.";
-    
+
     $telegramManager->sendMessage($chatId, $message);
 }
 
 function handleGeneralMessage($chatId, $text) {
     global $telegramManager;
-    
+
     $message = "🤖 Sveiki! Es esmu AVOTI uzdevumu sistēmas bots.\n\n";
     $message .= "Lai reģistrētos, nosūtiet: /start\n";
     $message .= "Palīdzībai nosūtiet: /help";
-    
+
     $telegramManager->sendMessage($chatId, $message);
 }
 ?>

@@ -36,6 +36,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updateStmt = $pdo->prepare("UPDATE lietotaji SET pēdējā_pieslēgšanās = NOW() WHERE id = ?");
                 $updateStmt->execute([$user['id']]);
                 
+                // Papildus sesijas saglabāšana Android aplikācijām
+                $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+                $is_android = (strpos($user_agent, 'CapacitorWebView') !== false || 
+                              strpos($user_agent, 'AVOTI TMS') !== false ||
+                              strpos($user_agent, 'Android') !== false);
+                
+                if ($is_android) {
+                    // Pārliecināties ka sesija tiek saglabāta Android lietotājiem
+                    session_write_close();
+                    sleep(1); // Īsa pauze, lai dati tiktu saglabāti
+                    session_start();
+                    
+                    error_log("Android login successful for user: " . $user['lietotajvards'] . ", Session ID: " . session_id());
+                    
+                    // Papildus pārbaude vai sesija ir saglabāta
+                    if (!isset($_SESSION['lietotaja_id'])) {
+                        error_log("Session not preserved for Android user: " . $user['lietotajvards']);
+                        // Atkārtoti iestatīt sesijas datus
+                        $_SESSION['lietotaja_id'] = $user['id'];
+                        $_SESSION['lietotajvards'] = $user['lietotajvards'];
+                        $_SESSION['vards'] = $user['vards'];
+                        $_SESSION['uzvards'] = $user['uzvards'];
+                        $_SESSION['loma'] = $user['loma'];
+                    }
+                }
+                
                 // Novirzīt uz sākuma lapu
                 redirect('index.php');
             } else {
@@ -93,15 +119,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .company-logo {
             width: 80px;
             height: 80px;
-            background: var(--secondary-color);
-            border-radius: 50%;
             margin: 0 auto var(--spacing-md);
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--white);
-            font-size: 2rem;
-            font-weight: bold;
+            overflow: hidden;
+            border-radius: 12px;
+            background: #03533f;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         
         .login-form .form-group {
@@ -150,7 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="login-container">
         <div class="login-card">
             <div class="login-header">
-                <div class="company-logo">A</div>
+                <div class="company-logo"><img src="assets/images/logo_bez_bg.png" alt="AVOTI Logo" style="width: 100%; height: 100%; object-fit: contain;"></div>
                 <h1><?php echo SITE_NAME; ?></h1>
                 <p><?php echo COMPANY_NAME; ?></p>
             </div>

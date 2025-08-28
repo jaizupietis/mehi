@@ -14,8 +14,13 @@ if (isset($_GET['task_id'])) {
     </script>";
 }
 
-// Pārbaudīt atļaujas
-requireRole([ROLE_ADMIN, ROLE_MANAGER]);
+// Pārbaudīt atļaujas - ja meklē konkrētu uzdevumu, atļaut visām lomām
+if (!isset($_GET['task_id'])) {
+    requireRole([ROLE_ADMIN, ROLE_MANAGER]);
+} else {
+    requireLogin(); // Tikai pārbaudīt, vai pieslēdzies
+}
+
 
 $pageTitle = 'Uzdevumi';
 $pageHeader = 'Uzdevumu pārvaldība';

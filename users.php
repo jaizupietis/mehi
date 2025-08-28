@@ -102,6 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nokluseta_vietas_id = intval($_POST['nokluseta_vietas_id'] ?? 0);
         $noklusetas_iekartas_id = intval($_POST['noklusetas_iekartas_id'] ?? 0);
         $jauna_parole = $_POST['jauna_parole'] ?? '';
+        $telegram_username = sanitizeInput($_POST['telegram_username'] ?? ''); // Pievienots Telegram lietotājvārds
 
         // Validācija
         if (empty($vards) || empty($uzvards) || empty($loma)) {
@@ -136,22 +137,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $hashed_password = password_hash($jauna_parole, PASSWORD_DEFAULT);
                     $stmt = $pdo->prepare("
                         UPDATE lietotaji 
-                        SET vards = ?, uzvards = ?, epasts = ?, telefons = ?, loma = ?, statuss = ?, parole = ?, nokluseta_vietas_id = ?, noklusetas_iekartas_id = ?
+                        SET vards = ?, uzvards = ?, epasts = ?, telefons = ?, loma = ?, statuss = ?, parole = ?, nokluseta_vietas_id = ?, noklusetas_iekartas_id = ?, telegram_username = ?
                         WHERE id = ?
                     ");
                     $stmt->execute([
                         $vards, $uzvards, $epasts ?: null, $telefons ?: null, 
-                        $loma, $statuss, $hashed_password, $nokluseta_vietas_id ?: null, $noklusetas_iekartas_id ?: null, $user_id
+                        $loma, $statuss, $hashed_password, $nokluseta_vietas_id ?: null, $noklusetas_iekartas_id ?: null, $telegram_username ?: null, $user_id
                     ]);
                 } else {
                     $stmt = $pdo->prepare("
                         UPDATE lietotaji 
-                        SET vards = ?, uzvards = ?, epasts = ?, telefons = ?, loma = ?, statuss = ?, nokluseta_vietas_id = ?, noklusetas_iekartas_id = ?
+                        SET vards = ?, uzvards = ?, epasts = ?, telefons = ?, loma = ?, statuss = ?, nokluseta_vietas_id = ?, noklusetas_iekartas_id = ?, telegram_username = ?
                         WHERE id = ?
                     ");
                     $stmt->execute([
                         $vards, $uzvards, $epasts ?: null, $telefons ?: null, 
-                        $loma, $statuss, $nokluseta_vietas_id ?: null, $noklusetas_iekartas_id ?: null, $user_id
+                        $loma, $statuss, $nokluseta_vietas_id ?: null, $noklusetas_iekartas_id ?: null, $telegram_username ?: null, $user_id
                     ]);
                 }
 
@@ -231,6 +232,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $loma = sanitizeInput(trim($data[6] ?? 'Operators'));
                 $vietas_nosaukums = sanitizeInput(trim($data[7] ?? ''));
                 $iekartas_nosaukums = sanitizeInput(trim($data[8] ?? ''));
+                $telegram_username = sanitizeInput(trim($data[9] ?? '')); // Pievienots Telegram lietotājvārds
 
                 // Automātiski ģenerēt lietotājvārdu, ja nav norādīts
                 if (empty($lietotajvards)) {
@@ -277,8 +279,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $stmt = $pdo->prepare("
                         INSERT INTO lietotaji 
-                        (vards, uzvards, lietotajvards, parole, epasts, telefons, loma, nokluseta_vietas_id, noklusetas_iekartas_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (vards, uzvards, lietotajvards, parole, epasts, telefons, loma, nokluseta_vietas_id, noklusetas_iekartas_id, telegram_username)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ");
 
                     $stmt->execute([
@@ -290,7 +292,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $telefons ?: null,
                         $loma,
                         $vietas_id,
-                        $iekartas_id
+                        $iekartas_id,
+                        $telegram_username ?: null
                     ]);
 
                     $imported_count++;
@@ -601,6 +604,9 @@ include 'includes/header.php';
                                     <?php if ($user['telefons']): ?>
                                         <div><small>📞 <?php echo htmlspecialchars($user['telefons']); ?></small></div>
                                     <?php endif; ?>
+                                    <?php if ($user['telegram_username']): ?>
+                                        <div><small>💬 <?php echo htmlspecialchars($user['telegram_username']); ?></small></div>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
                                     <span class="status-badge status-<?php echo strtolower($user['statuss']); ?>">
@@ -734,6 +740,13 @@ include 'includes/header.php';
                             </select>
                         </div>
                     </div>
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="new_telegram_username" class="form-label">Telegram lietotājvārds</label>
+                            <input type="text" id="new_telegram_username" name="telegram_username" class="form-control" placeholder="@lietotajvards">
+                            <small class="text-muted">Bez @ simbola vai telefona numurs</small>
+                        </div>
+                    </div>
                 </div>
             </form>
         </div>
@@ -836,6 +849,13 @@ include 'includes/header.php';
                             </select>
                         </div>
                     </div>
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="edit_telegram_username" class="form-label">Telegram lietotājvārds</label>
+                            <input type="text" id="edit_telegram_username" name="telegram_username" class="form-control" placeholder="@lietotajvards">
+                            <small class="text-muted">Bez @ simbola vai telefona numurs</small>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -865,7 +885,7 @@ include 'includes/header.php';
                     <label for="csv_file_users" class="form-label">CSV fails</label>
                     <input type="file" id="csv_file_users" name="csv_file" accept=".csv" class="form-control" required>
                 </div>
-                <small>Fails jābūt CSV formātā ar kolonnām: Vārds, Uzvārds, Lietotājvārds (nav obligāti), Parole (nav obligāti), E-pasts, Telefons, Loma (noklusēti 'Operators'), Vieta, Iekārta.</small>
+                <small>Fails jābūt CSV formātā ar kolonnām: Vārds, Uzvārds, Lietotājvārds (nav obligāti), Parole (nav obligāti), E-pasts, Telefons, Loma (noklusēti 'Operators'), Vieta, Iekārta, Telegram lietotājvārds (nav obligāti).</small>
             </form>
         </div>
         <div class="modal-footer">
@@ -932,7 +952,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Lietotāja rediģēšana
+//Lietotāja rediģēšana
 function editUser(user) {
     document.getElementById('edit_user_id').value = user.id;
     document.getElementById('edit_vards').value = user.vards;
@@ -943,6 +963,7 @@ function editUser(user) {
     document.getElementById('edit_statuss').value = user.statuss;
     document.getElementById('edit_nokluseta_vietas_id').value = user.nokluseta_vietas_id || '0';
     document.getElementById('edit_noklusetas_iekartas_id').value = user.noklusetas_iekartas_id || '0';
+    document.getElementById('edit_telegram_username').value = user.telegram_username || ''; // Iestatīt Telegram lietotājvārdu
     document.getElementById('edit_jauna_parole').value = '';
 
     openModal('editUserModal');

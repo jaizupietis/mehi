@@ -2,7 +2,7 @@
 require_once 'config.php';
 
 // Pārbaudīt atļaujas
-requireRole(ROLE_ADMIN);
+requireRole([ROLE_ADMIN, ROLE_MANAGER]);
 
 $pageTitle = 'Atskaites';
 $pageHeader = 'Sistēmas atskaites un statistika';
