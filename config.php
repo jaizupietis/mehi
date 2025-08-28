@@ -390,7 +390,7 @@ function getFlashMessages() {
 
 // Telegram Notifications konfigurācija
 define('TELEGRAM_NOTIFICATIONS_ENABLED', true);
-define('TELEGRAM_BOT_TOKEN', '8126777622:AAFBvEIT6qxGnkYaaXXE-KQ-I_bzK3JpDyg'); // Jūsu bot token
+define('TELEGRAM_BOT_TOKEN', ''); // Jūsu bot token
 
 // Telegram helper funkcijas
 function sendTaskTelegramNotification($lietotajaId, $taskTitle, $taskId, $type = 'new_task') {
